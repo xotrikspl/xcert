@@ -1,0 +1,16 @@
+{
+	"general": {
+		"cert_cmd": "certbot certonly --dns-ovh --dns-ovh-credentials ~/.ovhapi --non-interactive --agree-tos",
+		"arg_email": "--email",
+		"emails": [
+			"example@ex.com"
+		],
+
+		"arg_domain": "-d",
+		"domains": [
+			"example.com",
+		],
+		"output": "~/temp/cert/cert_output.txt",
+		"error": "~/temp/cert/cert_error.txt"
+	}
+}
