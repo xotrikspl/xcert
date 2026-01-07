@@ -1,0 +1,15 @@
+[Unit]
+Description=Automatyczne odnawianie certyfikatów xCert
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+# [cite_start]Pamiętaj o podaniu PEŁNEJ ścieżki do Pythona i skryptu [cite: 2]
+ExecStart=/usr/bin/python3 /root/.xcert/main.py --auto
+WorkingDirectory=/root/.xcert/
+# Opcjonalnie: ograniczenie zasobów
+MemoryMax=100M
+
+[Install]
+WantedBy=multi-user.target

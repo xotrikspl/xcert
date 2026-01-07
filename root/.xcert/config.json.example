@@ -1,16 +1,74 @@
 {
-	"general": {
-		"cert_cmd": "certbot certonly --dns-ovh --dns-ovh-credentials ~/.ovhapi --non-interactive --agree-tos",
-		"arg_email": "--email",
-		"emails": [
-			"example@ex.com"
-		],
-
-		"arg_domain": "-d",
-		"domains": [
-			"example.com",
-		],
-		"output": "~/temp/cert/cert_output.txt",
-		"error": "~/temp/cert/cert_error.txt"
-	}
+  "general": {
+    "default_provider": "ovh",
+    "logs": 1,
+    "output": "/var/log/xcert_output.log",
+    "error": "/var/log/xcert_error.log"
+  },
+  "providers": {
+    "ovh": {
+      "cmd_template": "certbot certonly --dns-ovh --dns-ovh-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.ovhapi"
+    },
+    "cloudflare": {
+      "cmd_template": "certbot certonly --dns-cloudflare --dns-cloudflare-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.cloudflare.ini"
+    },
+    "digitalocean": {
+      "cmd_template": "certbot certonly --dns-digitalocean --dns-digitalocean-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.digitalocean.ini"
+    },
+    "dnsimple": {
+      "cmd_template": "certbot certonly --dns-dnsimple --dns-dnsimple-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.dnsimple.ini"
+    },
+    "dnsmadeeasy": {
+      "cmd_template": "certbot certonly --dns-dnsmadeeasy --dns-dnsmadeeasy-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.dnsmadeeasy.ini"
+    },
+    "gehirn": {
+      "cmd_template": "certbot certonly --dns-gehirn --dns-gehirn-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.gehirn.ini"
+    },
+    "google": {
+      "cmd_template": "certbot certonly --dns-google --dns-google-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.google.json"
+    },
+    "linode": {
+      "cmd_template": "certbot certonly --dns-linode --dns-linode-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.linode.ini"
+    },
+    "luadns": {
+      "cmd_template": "certbot certonly --dns-luadns --dns-luadns-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.luadns.ini"
+    },
+    "nsone": {
+      "cmd_template": "certbot certonly --dns-nsone --dns-nsone-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.nsone.ini"
+    },
+    "rfc2136": {
+      "cmd_template": "certbot certonly --dns-rfc2136 --dns-rfc2136-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.rfc2136.ini"
+    },
+    "route53": {
+      "cmd_template": "certbot certonly --dns-route53 --non-interactive --agree-tos",
+      "credentials_path": null
+    },
+    "sakuracloud": {
+      "cmd_template": "certbot certonly --dns-sakuracloud --dns-sakuracloud-credentials {credentials} --non-interactive --agree-tos",
+      "credentials_path": "/root/.sakuracloud.ini"
+    }
+  },
+  "domains": [
+    {
+      "domain": "example.com",
+      "email": "admin@example.com",
+      "provider": "ovh"
+    },
+    {
+      "domain": "blog.example.org",
+      "email": "admin@example.com",
+      "provider": "cloudflare"
+    }
+  ]
 }

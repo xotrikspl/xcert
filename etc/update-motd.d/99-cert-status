@@ -1,0 +1,101 @@
+#!/bin/bash
+
+CONFIG_PATH="/root/.xcert/config.json"
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+echo -e "${CYAN}=== SYSTEM MONITORING CERTYFIKATÓW xCert ===${NC}"
+
+if [ ! -f "$CONFIG_PATH" ]; then
+    echo -e "${RED}Błąd: Brak pliku config.json${NC}"
+    exit 1
+fi
+
+# Sprawdź, czy są domeny
+if ! jq -e '.domains | type == "array" and length > 0' "$CONFIG_PATH" >/dev/null 2>&1; then
+    echo -e "${YELLOW}Brak domen w konfiguracji.${NC}"
+    echo -e "${CYAN}============================================${NC}"
+    exit 0
+fi
+
+# Pobieraj domeny bezpiecznie
+while IFS= read -r DOMAIN; do
+    [ -z "$DOMAIN" ] && continue
+
+    CLEAN_DOMAIN=$(echo "$DOMAIN" | sed 's/^\*\.\(.*\)/\1/')
+    CERT_PATH="/etc/letsencrypt/live/$CLEAN_DOMAIN/fullchain.pem"
+
+    if [ -f "$CERT_PATH" ]; then
+        # Spróbuj pobrać datę wygaśnięcia
+        if ! EXP_DATE_STR=$(openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2); then
+            echo -e "${RED}  $DOMAIN: BŁĄD - Nie można odczytać certyfikatu!${NC}"
+            echo ""
+            continue
+        fi
+
+        # Konwersja dat
+        if ! EXP_SECONDS=$(date -d "$EXP_DATE_STR" +%s 2>/dev/null); then
+            echo -e "${RED}  $DOMAIN: BŁĄD - Nieprawidłowa data: $EXP_DATE_STR${NC}"
+            echo ""
+            continue
+        fi
+        NOW_SECONDS=$(date +%s)
+        DAYS_LEFT=$(( (EXP_SECONDS - NOW_SECONDS) / 86400 ))
+        NEXT_RENEW=$(date -d "$EXP_DATE_STR" +"%Y-%m-%d")
+
+        # Ostatnie odnowienie
+        LAST_MOD_SECONDS=$(stat -c %Y "$CERT_PATH")
+        DAYS_AGO=$(( (NOW_SECONDS - LAST_MOD_SECONDS) / 86400 ))
+        LAST_DATE=$(date -d "@$LAST_MOD_SECONDS" +"%Y-%m-%d")
+
+        # Kolor i status
+        if [ $DAYS_LEFT -lt 0 ]; then
+            COLOR=$RED
+            STATUS_TEXT="$((-DAYS_LEFT)) dni PO TERMINIE!"
+        elif [ $DAYS_LEFT -lt 7 ]; then
+            COLOR=$RED
+            STATUS_TEXT="$DAYS_LEFT dni pozostało"
+        elif [ $DAYS_LEFT -lt 21 ]; then
+            COLOR=$YELLOW
+            STATUS_TEXT="$DAYS_LEFT dni pozostało"
+        else
+            COLOR=$GREEN
+            STATUS_TEXT="$DAYS_LEFT dni pozostało"
+        fi
+
+        echo -e "Domena: ${YELLOW}$DOMAIN${NC}"
+        echo -e "  └─ Status: ${COLOR}${STATUS_TEXT}${NC} (Następne: $NEXT_RENEW)"
+        echo -e "  └─ Ostatnio odnowiono: $LAST_DATE ($DAYS_AGO dni temu)"
+
+        # Pasek postępu (max 90 dni)
+        PERCENT=$(( 100 - (DAYS_LEFT * 100 / 90) ))
+        [ $PERCENT -lt 0 ] && PERCENT=0
+        [ $PERCENT -gt 100 ] && PERCENT=100
+        BAR_LEN=$((PERCENT / 5))
+        BAR=$(printf "%0.s#" $(seq 1 $BAR_LEN))
+        SPACES=$(printf "%0.s." $(seq 1 $((20 - BAR_LEN))))
+        echo -e "  └─ Zużycie: [${COLOR}${BAR}${NC}${SPACES}] ${PERCENT}%"
+        echo ""
+    else
+        echo -e "${RED}  $DOMAIN: BŁĄD - Nie znaleziono certyfikatu!${NC}"
+        echo ""
+    fi
+done < <(jq -r '.domains[].domain // empty' "$CONFIG_PATH")
+
+# Status systemd
+echo -e "${CYAN}Status automatu (Systemd Timer):${NC}"
+if systemctl is-active --quiet xcert.timer; then
+    NEXT_RUN=$(systemctl list-timers --no-pager xcert.timer 2>/dev/null | awk 'NR==2 {print $2, $3}')
+    if [ -n "$NEXT_RUN" ]; then
+        echo -e "  [${GREEN}AKTYWNY${NC}] Następne sprawdzanie: $NEXT_RUN"
+    else
+        echo -e "  [${GREEN}AKTYWNY${NC}] (nie można pobrać harmonogramu)"
+    fi
+else
+    echo -e "  [${RED}NIEAKTYWNY${NC}] Uwaga: Automat odświeżania nie działa!"
+fi
+
+echo -e "${CYAN}============================================${NC}"
