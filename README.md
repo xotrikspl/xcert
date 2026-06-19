@@ -1,13 +1,13 @@
-# **xCert – Uniwersalny menedżer certyfikatów Let’s Encrypt**
+# xCert – Universal Let's Encrypt Certificate Manager
 
-Automatyzacja odnawiania certyfikatów SSL/TLS z wykorzystaniem DNS challenge dla ponad 13 dostawców (OVH, Cloudflare, AWS Route53, DigitalOcean i innych), z integracją MOTD, raportowaniem, walidacją danych oraz interaktywnym CLI.
+Automated SSL/TLS certificate renewal using DNS challenges for 13+ providers (OVH, Cloudflare, AWS Route53, DigitalOcean, and more), with MOTD integration, certificate reporting, input validation, and an interactive CLI.
 
-## **1. Wymagania systemowe**
+## 1. System Requirements
 
-Przed uruchomieniem zainstaluj niezbędne pakiety:
+Install the required packages before running:
 
-* **Python 3** oraz **python3-pip**
-* **Certbot i pluginy DNS** (wybierz potrzebne):
+* **Python 3** and **python3-pip**
+* **Certbot and DNS plugins** (install only the ones you need):
 ```bash
 pip install certbot \
             certbot-dns-ovh \
@@ -24,40 +24,49 @@ pip install certbot \
             certbot-dns-route53 \
             certbot-dns-sakuracloud
 ```
-* **Narzędzia systemowe** (do MOTD i raportów):
-```
+* **System utilities** (required for MOTD and reports):
+```bash
 apt update && apt install jq curl openssl -y
 ```
 
-## **2. Konfiguracja API dostawcy (przykład: OVH)**
+## 2. DNS Provider Credentials (example: OVH)
 
-1. Przejdź do [OVH API Create Token](https://www.ovh.com/auth/api/createToken).
-2. Nadaj uprawnienia: `GET, PUT, POST, DELETE` do ścieżki `/domain/zone/*`.
-3. Zapisz dane do pliku (np. `/root/.ovhapi`):
+1. Go to [OVH API Create Token](https://www.ovh.com/auth/api/createToken).
+2. Grant permissions: `GET, PUT, POST, DELETE` on path `/domain/zone/*`.
+3. Save credentials to a file (e.g. `/root/.ovhapi`):
 ```
 dns_ovh_endpoint = ovh-eu
-dns_ovh_application_key = TWOJ_KEY
-dns_ovh_application_secret = TWOJ_SECRET
-dns_ovh_consumer_key = TWOJ_CONSUMER_KEY
+dns_ovh_application_key = YOUR_KEY
+dns_ovh_application_secret = YOUR_SECRET
+dns_ovh_consumer_key = YOUR_CONSUMER_KEY
 ```
-4. Zabezpiecz plik:
-```
+4. Secure the file:
+```bash
 chmod 600 /root/.ovhapi
 ```
 
-> Dla innych dostawców (Cloudflare, AWS itp.) przygotuj odpowiednie pliki poświadczeń zgodnie z dokumentacją Certbota.
+> For other providers (Cloudflare, AWS, etc.) create the appropriate credentials files as described in the Certbot documentation.
 
-## **3. Konfiguracja skryptu (`config.json`)**
+## 3. Configuration (`config.json`)
 
-Struktura pliku obsługuje **wiele domen i providerów**:
-
+Copy the example config and edit it:
+```bash
+cp /root/.xcert/config.json.example /root/.xcert/config.json
 ```
+
+Full structure with all available options:
+
+```json
 {
   "general": {
     "default_provider": "ovh",
     "logs": 1,
     "output": "/var/log/xcert_output.log",
-    "error": "/var/log/xcert_error.log"
+    "error": "/var/log/xcert_error.log",
+    "renew_threshold_days": 30,
+    "post_renewal_cmd": "systemctl reload nginx",
+    "retry_count": 2,
+    "retry_delay_seconds": 30
   },
   "providers": {
     "ovh": {
@@ -84,12 +93,59 @@ Struktura pliku obsługuje **wiele domen i providerów**:
 }
 ```
 
-## **4. Automatyzacja (Systemd Timer)**
+### Configuration reference
 
-Zalecane: odnawianie **co tydzień** (poniedziałek, 01:00).
+| Key | Section | Description |
+|-----|---------|-------------|
+| `default_provider` | `general` | Fallback provider used when a domain has no explicit provider set |
+| `logs` | `general` | `1` = write certbot output to log files, `0` = print to console |
+| `output` | `general` | Path for certbot stdout log (required when `logs=1`) |
+| `error` | `general` | Path for certbot stderr log (required when `logs=1`) |
+| `renew_threshold_days` | `general` | Skip renewal if the certificate expires in more than this many days (saves Let's Encrypt rate limits). Set to `0` to always renew. |
+| `post_renewal_cmd` | `general` | Shell command to run after each successful renewal (e.g. `systemctl reload nginx`). Leave empty to disable. |
+| `retry_count` | `general` | Number of retry attempts on certbot failure. `0` = no retries. |
+| `retry_delay_seconds` | `general` | Seconds to wait between retry attempts. |
+| `cmd_template` | `providers.*` | Certbot command template. Use `{credentials}` as a placeholder for the credentials file path. |
+| `credentials_path` | `providers.*` | Path to the DNS provider credentials file. Set to `null` for providers that use environment variables or IAM roles (e.g. route53). |
 
-### **A. Usługa** (`/etc/systemd/system/xcert.service`)
+## 4. Usage
+
+```bash
+# Renew all domains from config.json
+xcert --auto
+
+# Renew a single domain manually
+xcert --domain example.com --email admin@example.com --provider cloudflare
+
+# Test configuration without issuing a certificate
+xcert --auto --dry-run
+xcert --domain example.com --email admin@example.com --dry-run
+
+# Show all domains and their certificate status
+xcert --list
+
+# Generate a JSON validity report (saved to /root/.xcert/xcert_report.json)
+xcert --report
+
+# Launch the interactive text menu
+xcert --menu
+
+# Edit configuration interactively
+xcert --edit-config
+
+# Show version
+xcert --version
+
+# Enable verbose debug logging (combine with any flag)
+xcert --auto --debug
 ```
+
+## 5. Automation (Systemd Timer)
+
+Recommended schedule: **weekly on Monday at 01:00**.
+
+### A. Service (`/etc/systemd/system/xcert.service`)
+```ini
 [Unit]
 Description=xCert SSL Renewal Service
 After=network.target
@@ -99,12 +155,13 @@ Type=oneshot
 ExecStart=/usr/bin/python3 /root/.xcert/main.py --auto
 WorkingDirectory=/root/.xcert/
 User=root
+MemoryMax=100M
 ```
 
-### **B. Timer** (`/etc/systemd/system/xcert.timer`)
-```
+### B. Timer (`/etc/systemd/system/xcert.timer`)
+```ini
 [Unit]
-Description=Uruchamia xCert raz w tygodniu
+Description=Run xCert weekly
 
 [Timer]
 OnCalendar=Mon *-*-* 01:00:00
@@ -114,45 +171,40 @@ Persistent=true
 WantedBy=timers.target
 ```
 
-Po zapisaniu wykonaj poniższe polecenia:
-```
+Enable and start:
+```bash
 systemctl daemon-reload
 systemctl enable --now xcert.timer
 ```
-Test ręczny:
-```
+
+Manual test run:
+```bash
 systemctl start xcert.service
 ```
 
-## **5. Status w MOTD (Podgląd przy logowaniu)**
+## 6. MOTD Integration
 
-1. Umieść skrypt w: `/etc/update-motd.d/99-cert-status`
-2. Nadaj uprawnienia: `chmod +x /etc/update-motd.d/99-cert-status`
-3. Napraw ewentualne znaki Windows (jeśli kopiowano): `sed -i 's/\r$//' /etc/update-motd.d/99-cert-status`
-4. Upewnij się, że w `/etc/ssh/sshd_config` masz `#PrintMotd yes` lub `PrintMotd no` i zrestartuj SSH: `systemctl restart ssh`
+Display certificate status at SSH login:
 
-## **6. Logrotate (Zarządzanie logami)**
+1. Place the script at `/etc/update-motd.d/99-cert-status`
+2. Make it executable: `chmod +x /etc/update-motd.d/99-cert-status`
+3. Fix Windows line endings if copied from Windows: `sed -i 's/\r$//' /etc/update-motd.d/99-cert-status`
+4. Ensure `/etc/ssh/sshd_config` has `PrintMotd yes` (or `UsePAM yes` on Debian/Ubuntu) and restart SSH: `systemctl restart ssh`
 
-Aby uniknąć przepełnienia dysku, skonfiguruj rotację logów:
+## 7. Log Rotation
 
-```bash
+Prevent log files from filling up the disk:
+
+```
 /var/log/xcert_*.log /var/log/letsencrypt/*.log {
-	weekly
-	rotate 12
-	compress
-	delaycompress
-	missingok
-	notifempty
-	create 640 root adm
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 640 root adm
 }
 ```
 
-## **7. Użycie**
-* **Automatyczna certyfikacja**: `python3 main.py --auto`
-* **Ręczna (jedna domena)**: `python3 main.py --domain example.com --email admin@example.com --provider cloudflare`
-* **Interaktywne menu**: `python3 main.py --menu`
-* **Generuj raport ważności**: `python3 main.py --report`
-* **Edytuj konfigurację w terminalu**: `python3 main.py --edit-config`
-* **Tryb debugowania**: Dodaj flagę `--debug` do dowolnej komendy
-
-> Raporty zapisywane są w katalogu, z którego uruchamiany jest skrypt (domyślnie: ./xcert_report.json). Przy użyciu systemd — w katalogu roboczym usługi (/root/.xcert/).
+Save this to `/etc/logrotate.d/xcert`.

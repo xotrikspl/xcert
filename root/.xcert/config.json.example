@@ -3,7 +3,11 @@
     "default_provider": "ovh",
     "logs": 1,
     "output": "/var/log/xcert_output.log",
-    "error": "/var/log/xcert_error.log"
+    "error": "/var/log/xcert_error.log",
+    "renew_threshold_days": 30,
+    "post_renewal_cmd": "",
+    "retry_count": 0,
+    "retry_delay_seconds": 30
   },
   "providers": {
     "ovh": {

@@ -1,2 +1,4 @@
 .idea/*
 root/.xcert/config.json
+__pycache__/
+*.pyc

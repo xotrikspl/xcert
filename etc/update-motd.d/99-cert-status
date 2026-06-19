@@ -7,21 +7,21 @@ RED='\033[0;31m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-echo -e "${CYAN}=== SYSTEM MONITORING CERTYFIKATÓW xCert ===${NC}"
+echo -e "${CYAN}=== xCert CERTIFICATE MONITORING ===${NC}"
 
 if [ ! -f "$CONFIG_PATH" ]; then
-    echo -e "${RED}Błąd: Brak pliku config.json${NC}"
+    echo -e "${RED}Error: config.json not found${NC}"
     exit 1
 fi
 
-# Sprawdź, czy są domeny
+# Check whether any domains are configured
 if ! jq -e '.domains | type == "array" and length > 0' "$CONFIG_PATH" >/dev/null 2>&1; then
-    echo -e "${YELLOW}Brak domen w konfiguracji.${NC}"
+    echo -e "${YELLOW}No domains configured.${NC}"
     echo -e "${CYAN}============================================${NC}"
     exit 0
 fi
 
-# Pobieraj domeny bezpiecznie
+# Iterate over domains safely
 while IFS= read -r DOMAIN; do
     [ -z "$DOMAIN" ] && continue
 
@@ -29,16 +29,16 @@ while IFS= read -r DOMAIN; do
     CERT_PATH="/etc/letsencrypt/live/$CLEAN_DOMAIN/fullchain.pem"
 
     if [ -f "$CERT_PATH" ]; then
-        # Spróbuj pobrać datę wygaśnięcia
-        if ! EXP_DATE_STR=$(openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2); then
-            echo -e "${RED}  $DOMAIN: BŁĄD - Nie można odczytać certyfikatu!${NC}"
+        # Read expiry date with a timeout to avoid blocking SSH login
+        if ! EXP_DATE_STR=$(timeout 5 openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2); then
+            echo -e "${RED}  $DOMAIN: ERROR - Cannot read certificate!${NC}"
             echo ""
             continue
         fi
 
-        # Konwersja dat
+        # Convert date to epoch seconds
         if ! EXP_SECONDS=$(date -d "$EXP_DATE_STR" +%s 2>/dev/null); then
-            echo -e "${RED}  $DOMAIN: BŁĄD - Nieprawidłowa data: $EXP_DATE_STR${NC}"
+            echo -e "${RED}  $DOMAIN: ERROR - Invalid date: $EXP_DATE_STR${NC}"
             echo ""
             continue
         fi
@@ -46,56 +46,56 @@ while IFS= read -r DOMAIN; do
         DAYS_LEFT=$(( (EXP_SECONDS - NOW_SECONDS) / 86400 ))
         NEXT_RENEW=$(date -d "$EXP_DATE_STR" +"%Y-%m-%d")
 
-        # Ostatnie odnowienie
+        # Last renewal date (based on file modification time)
         LAST_MOD_SECONDS=$(stat -c %Y "$CERT_PATH")
         DAYS_AGO=$(( (NOW_SECONDS - LAST_MOD_SECONDS) / 86400 ))
         LAST_DATE=$(date -d "@$LAST_MOD_SECONDS" +"%Y-%m-%d")
 
-        # Kolor i status
+        # Color-coded status
         if [ $DAYS_LEFT -lt 0 ]; then
             COLOR=$RED
-            STATUS_TEXT="$((-DAYS_LEFT)) dni PO TERMINIE!"
+            STATUS_TEXT="$((-DAYS_LEFT)) days OVERDUE!"
         elif [ $DAYS_LEFT -lt 7 ]; then
             COLOR=$RED
-            STATUS_TEXT="$DAYS_LEFT dni pozostało"
+            STATUS_TEXT="$DAYS_LEFT days remaining"
         elif [ $DAYS_LEFT -lt 21 ]; then
             COLOR=$YELLOW
-            STATUS_TEXT="$DAYS_LEFT dni pozostało"
+            STATUS_TEXT="$DAYS_LEFT days remaining"
         else
             COLOR=$GREEN
-            STATUS_TEXT="$DAYS_LEFT dni pozostało"
+            STATUS_TEXT="$DAYS_LEFT days remaining"
         fi
 
-        echo -e "Domena: ${YELLOW}$DOMAIN${NC}"
-        echo -e "  └─ Status: ${COLOR}${STATUS_TEXT}${NC} (Następne: $NEXT_RENEW)"
-        echo -e "  └─ Ostatnio odnowiono: $LAST_DATE ($DAYS_AGO dni temu)"
+        echo -e "Domain: ${YELLOW}$DOMAIN${NC}"
+        echo -e "  └─ Status: ${COLOR}${STATUS_TEXT}${NC} (Expires: $NEXT_RENEW)"
+        echo -e "  └─ Last renewed: $LAST_DATE ($DAYS_AGO days ago)"
 
-        # Pasek postępu (max 90 dni)
+        # Progress bar (max 90 days)
         PERCENT=$(( 100 - (DAYS_LEFT * 100 / 90) ))
         [ $PERCENT -lt 0 ] && PERCENT=0
         [ $PERCENT -gt 100 ] && PERCENT=100
         BAR_LEN=$((PERCENT / 5))
         BAR=$(printf "%0.s#" $(seq 1 $BAR_LEN))
         SPACES=$(printf "%0.s." $(seq 1 $((20 - BAR_LEN))))
-        echo -e "  └─ Zużycie: [${COLOR}${BAR}${NC}${SPACES}] ${PERCENT}%"
+        echo -e "  └─ Usage: [${COLOR}${BAR}${NC}${SPACES}] ${PERCENT}%"
         echo ""
     else
-        echo -e "${RED}  $DOMAIN: BŁĄD - Nie znaleziono certyfikatu!${NC}"
+        echo -e "${RED}  $DOMAIN: ERROR - Certificate not found!${NC}"
         echo ""
     fi
 done < <(jq -r '.domains[].domain // empty' "$CONFIG_PATH")
 
-# Status systemd
-echo -e "${CYAN}Status automatu (Systemd Timer):${NC}"
+# Systemd timer status
+echo -e "${CYAN}Automation status (Systemd Timer):${NC}"
 if systemctl is-active --quiet xcert.timer; then
     NEXT_RUN=$(systemctl list-timers --no-pager xcert.timer 2>/dev/null | awk 'NR==2 {print $2, $3}')
     if [ -n "$NEXT_RUN" ]; then
-        echo -e "  [${GREEN}AKTYWNY${NC}] Następne sprawdzanie: $NEXT_RUN"
+        echo -e "  [${GREEN}ACTIVE${NC}] Next run: $NEXT_RUN"
     else
-        echo -e "  [${GREEN}AKTYWNY${NC}] (nie można pobrać harmonogramu)"
+        echo -e "  [${GREEN}ACTIVE${NC}] (schedule unavailable)"
     fi
 else
-    echo -e "  [${RED}NIEAKTYWNY${NC}] Uwaga: Automat odświeżania nie działa!"
+    echo -e "  [${RED}INACTIVE${NC}] Warning: Auto-renewal is not running!"
 fi
 
 echo -e "${CYAN}============================================${NC}"
