@@ -112,6 +112,17 @@ class ColorModeTest(unittest.TestCase):
         self.assertEqual(ui.resolve_color_mode("16", self.pipe, assume_terminal=True, env={}), "16")
 
 
+class DefaultsTest(unittest.TestCase):
+    def test_missing_threshold_skips_fresh_certificate_without_certbot(self):
+        general = {"logs": 0}
+        with mock.patch.object(main, "cert_days_left", return_value=60), \
+                mock.patch.object(main, "run_command") as run:
+            ok = main.cert_for_domains(["example.pl"], "admin@example.pl", "ovh", general,
+                                       {"ovh": {"cmd_template": "certbot certonly"}}, mock.Mock())
+        self.assertTrue(ok)
+        run.assert_not_called()
+
+
 class AppearanceTest(unittest.TestCase):
     def test_cli_overrides_saved_appearance(self):
         config = {"appearance": {"theme": "timeline", "colors": "16", "background": "light"}}

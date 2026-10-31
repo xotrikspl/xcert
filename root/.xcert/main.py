@@ -282,7 +282,7 @@ def cert_for_domains(
         logger.error(f"Invalid email for {domain_label}: {email}")
         return False
 
-    renew_threshold_days = int(general_config.get("renew_threshold_days", 0))
+    renew_threshold_days = int(general_config.get("renew_threshold_days", 30))
     if renew_threshold_days > 0:
         primary = domains[0]
         days_left = cert_days_left(primary, general_config)
@@ -405,7 +405,7 @@ def cert_auto(
     domains_list = config.get("domains", [])
     general = config["general"]
     providers = config["providers"]
-    sleep_between = int(general.get("sleep_between_domains_seconds", 0))
+    sleep_between = int(general.get("sleep_between_domains_seconds", 10))
 
     if not domains_list:
         logger.warning("No domains configured in config.json")

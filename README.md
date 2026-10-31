@@ -182,12 +182,12 @@ xcert --list --theme console --colors 16 --background light
 | `report` | `xcert_report.json` next to `main.py` | Where `--report` writes the JSON report. |
 | `certbot_config_dir` | `/etc/letsencrypt` | Certbot `--config-dir`; certificates land in `<dir>/live/<name>/`. |
 | `certbot_work_dir`, `certbot_logs_dir` | `/var/lib/letsencrypt`, `/var/log/letsencrypt` | Certbot `--work-dir` and `--logs-dir`. |
-| `renew_threshold_days` | `0` | Skip certificates valid for more than this many days. `0` renews every run, which burns Let's Encrypt limits; `30` is recommended. |
+| `renew_threshold_days` | `30` | Skip certificates valid for more than this many days. Set `0` to renew on every run, which burns Let's Encrypt limits. |
 | `post_renewal_cmd` | empty | Command run after each successful renewal. It is split like a shell command but not run through a shell, so `&&` and pipes do not work; call a script for several steps. |
 | `max_retries` | `3` | Attempts per certificate. Only rate-limit errors are retried; a bad token fails at once. |
 | `base_backoff_seconds`, `backoff_jitter_seconds` | `60`, `15` | Wait before retry `n` is `base * n` plus a random jitter. |
 | `command_timeout_seconds` | `900` | Certbot run is killed after this long. |
-| `sleep_between_domains_seconds` | `0` | Pause between certificates, keeps DNS APIs calm. |
+| `sleep_between_domains_seconds` | `10` | Pause between certificates, keeps DNS APIs calm. |
 | `dry_run` | `0` | `1` makes every run a dry run, same as `--dry-run`. |
 
 `retry_count` and `retry_delay_seconds` from older configs still work as aliases of `max_retries` and `base_backoff_seconds`.
