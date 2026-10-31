@@ -1,1 +1,2 @@
-python3 /root/.xcert/main.py "$@"
+#!/bin/sh
+exec python3 /root/.xcert/main.py "$@"

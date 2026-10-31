@@ -1,10 +1,8 @@
 [Unit]
-Description=Uruchamia xCert raz w tygodniu (w poniedziałek o 01:00)
+Description=Run xCert weekly
 
 [Timer]
-# Uruchamia skrypt w każdy poniedziałek o godzinie 01:00
 OnCalendar=Mon *-*-* 01:00:00
-# Zapewnia uruchomienie po starcie systemu, jeśli serwer był wyłączony w terminie
 Persistent=true
 
 [Install]

@@ -4,10 +4,23 @@
     "logs": 1,
     "output": "/var/log/xcert_output.log",
     "error": "/var/log/xcert_error.log",
+    "report": "/root/.xcert/xcert_report.json",
+    "certbot_config_dir": "/etc/letsencrypt",
+    "certbot_work_dir": "/var/lib/letsencrypt",
+    "certbot_logs_dir": "/var/log/letsencrypt",
     "renew_threshold_days": 30,
-    "post_renewal_cmd": "",
-    "retry_count": 0,
-    "retry_delay_seconds": 30
+    "post_renewal_cmd": "systemctl reload nginx",
+    "max_retries": 3,
+    "base_backoff_seconds": 60,
+    "backoff_jitter_seconds": 15,
+    "command_timeout_seconds": 900,
+    "sleep_between_domains_seconds": 10,
+    "dry_run": 0
+  },
+  "appearance": {
+    "theme": "ledger",
+    "colors": "auto",
+    "background": "dark"
   },
   "providers": {
     "ovh": {
@@ -16,7 +29,9 @@
     },
     "cloudflare": {
       "cmd_template": "certbot certonly --dns-cloudflare --dns-cloudflare-credentials {credentials} --non-interactive --agree-tos",
-      "credentials_path": "/root/.cloudflare.ini"
+      "certbot_plugin_name": "dns-cloudflare",
+      "credentials_path": "/root/.cloudflare.ini",
+      "propagation_seconds": 90
     },
     "digitalocean": {
       "cmd_template": "certbot certonly --dns-digitalocean --dns-digitalocean-credentials {credentials} --non-interactive --agree-tos",
@@ -70,7 +85,7 @@
       "provider": "ovh"
     },
     {
-      "domain": "blog.example.org",
+      "domain": "*.example.com",
       "email": "admin@example.com",
       "provider": "cloudflare"
     }
