@@ -46,19 +46,36 @@ Available plugins: `certbot-dns-cloudflare`, `-digitalocean`, `-dnsimple`, `-dns
 
 ### 2. xCert
 
+The repository is the installation: clone it to `/opt/xcert` and update it with `git pull`.
+
 ```bash
-git clone https://github.com/xotrikspl/xcert.git /tmp/xcert
-mkdir -p /root/.xcert
-cp /tmp/xcert/root/.xcert/*.py /tmp/xcert/root/.xcert/config.json.example /root/.xcert/
-cp /tmp/xcert/root/.xcert/config.json.example /root/.xcert/config.json
-install -m 755 /tmp/xcert/bin/xcert /usr/local/bin/xcert
+git clone https://github.com/xotrikspl/xcert.git /opt/xcert
+cd /opt/xcert
+cp config/config.json.example config/config.json
+chmod 700 secrets
+ln -sf /opt/xcert/bin/xcert /usr/local/bin/xcert
 ```
+
+```
+/opt/xcert
+├── bin/xcert           CLI wrapper, symlinked into /usr/local/bin
+├── src/                xCert itself (main.py, ui.py, json_loader.py)
+├── config/             config.json (yours, not in git) and config.json.example
+├── secrets/            DNS provider credentials (not in git)
+├── logs/               xCert logs and the JSON report (not in git)
+├── etc/                systemd units and the MOTD script to copy into /etc
+└── tests/
+```
+
+Updating: `cd /opt/xcert && git pull`. Your `config/config.json`, `secrets/` and `logs/` are ignored by git, so a pull never touches them.
+
+Coming from 1.2 or older (`/root/.xcert`): move `/root/.xcert/config.json` to `/opt/xcert/config/config.json`, then copy the systemd unit and MOTD script again (steps in [Automation](#automation) and [Status at SSH login](#status-at-ssh-login)) and remove `/root/.xcert`. Absolute paths in an old config keep working.
 
 ### 3. DNS provider credentials
 
-Create a token with the smallest scope your provider allows (ideally only the DNS zones you need), store it in a file readable by root only and point `credentials_path` at it.
+Create a token with the smallest scope your provider allows (ideally only the DNS zones you need) and store it in `secrets/`, readable by root only. `credentials_path` in the example config already points there.
 
-OVH example (create the token at https://www.ovh.com/auth/api/createToken with `GET`, `PUT`, `POST`, `DELETE` on `/domain/zone/*`):
+OVH example, `secrets/ovh.ini` (create the token at https://www.ovh.com/auth/api/createToken with `GET`, `PUT`, `POST`, `DELETE` on `/domain/zone/*`):
 
 ```ini
 dns_ovh_endpoint = ovh-eu
@@ -68,14 +85,14 @@ dns_ovh_consumer_key = YOUR_CONSUMER_KEY
 ```
 
 ```bash
-chmod 600 /root/.ovhapi
+chmod 600 /opt/xcert/secrets/ovh.ini
 ```
 
-Cloudflare uses `dns_cloudflare_api_token = YOUR_TOKEN`. Every other plugin documents its file format in the Certbot docs. Route53 reads AWS credentials from the environment or an IAM role, so its provider has no `credentials_path`. `xcert --validate-config` warns when a credentials file is readable by anyone other than root.
+Cloudflare uses `dns_cloudflare_api_token = YOUR_TOKEN` in `secrets/cloudflare.ini`. Every other plugin documents its file format in the Certbot docs. Route53 reads AWS credentials from the environment or an IAM role, so its provider has no `credentials_path`. `xcert --validate-config` warns when a credentials file is readable by anyone other than root.
 
 ### 4. Configure and test
 
-Edit `/root/.xcert/config.json` (see [Configuration](#configuration)), then:
+Edit `config/config.json` (see [Configuration](#configuration)), then:
 
 ```bash
 xcert --validate-config        # config, providers and credential files
@@ -101,7 +118,7 @@ xcert --version
 xcert --auto --debug           # verbose logging, combines with any flag
 ```
 
-Every command accepts `--config PATH` (default: `config.json` next to `main.py`) and the appearance overrides below. `--auto` exits with code 1 when any certificate fails, so the systemd unit shows up as failed.
+Every command accepts `--config PATH` (default: `config/config.json` in the repository) and the appearance overrides below. `--auto` exits with code 1 when any certificate fails, so the systemd unit shows up as failed.
 
 ## Appearance
 
@@ -124,16 +141,16 @@ xcert --list --theme console --colors 16 --background light
 
 ## Configuration
 
-`config.json` has four sections. Relative paths are resolved from the xCert directory, not from the current working directory.
+`config.json` has four sections. Relative paths are resolved from the repository root (`/opt/xcert`), not from the current working directory.
 
 ```json
 {
   "general": {
     "default_provider": "ovh",
     "logs": 1,
-    "output": "/var/log/xcert_output.log",
-    "error": "/var/log/xcert_error.log",
-    "report": "/root/.xcert/xcert_report.json",
+    "output": "logs/xcert_output.log",
+    "error": "logs/xcert_error.log",
+    "report": "logs/xcert_report.json",
     "certbot_config_dir": "/etc/letsencrypt",
     "certbot_work_dir": "/var/lib/letsencrypt",
     "certbot_logs_dir": "/var/log/letsencrypt",
@@ -154,11 +171,11 @@ xcert --list --theme console --colors 16 --background light
   "providers": {
     "ovh": {
       "cmd_template": "certbot certonly --dns-ovh --dns-ovh-credentials {credentials} --non-interactive --agree-tos",
-      "credentials_path": "/root/.ovhapi"
+      "credentials_path": "secrets/ovh.ini"
     },
     "cloudflare": {
       "cmd_template": "certbot certonly --dns-cloudflare --dns-cloudflare-credentials {credentials} --non-interactive --agree-tos",
-      "credentials_path": "/root/.cloudflare.ini",
+      "credentials_path": "secrets/cloudflare.ini",
       "certbot_plugin_name": "dns-cloudflare",
       "propagation_seconds": 90
     }
@@ -179,7 +196,7 @@ xcert --list --theme console --colors 16 --background light
 |-----|---------|---------|
 | `default_provider` | `ovh` | Provider for domains without their own `provider`. |
 | `logs` | `1` | `1` writes Certbot output to `output` / `error` (both required then), `0` prints it to the console. |
-| `report` | `xcert_report.json` next to `main.py` | Where `--report` writes the JSON report. |
+| `report` | `logs/xcert_report.json` | Where `--report` writes the JSON report. |
 | `certbot_config_dir` | `/etc/letsencrypt` | Certbot `--config-dir`; certificates land in `<dir>/live/<name>/`. |
 | `certbot_work_dir`, `certbot_logs_dir` | `/var/lib/letsencrypt`, `/var/log/letsencrypt` | Certbot `--work-dir` and `--logs-dir`. |
 | `renew_threshold_days` | `30` | Skip certificates valid for more than this many days. Set `0` to renew on every run, which burns Let's Encrypt limits. |
@@ -224,7 +241,7 @@ Reload the container after renewal with `post_renewal_cmd`, for example `docker 
 The repository ships both units in `etc/systemd/system/`: `xcert.service` runs `--auto` as a oneshot job, `xcert.timer` starts it every Monday at 01:00 (`Persistent=true` catches up after downtime).
 
 ```bash
-cp /tmp/xcert/etc/systemd/system/xcert.{service,timer} /etc/systemd/system/
+cp /opt/xcert/etc/systemd/system/xcert.{service,timer} /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now xcert.timer
 systemctl start xcert.service      # one manual run
@@ -236,15 +253,15 @@ journalctl -u xcert.service        # its output, always plain text
 `etc/update-motd.d/99-cert-status` calls `xcert --motd` with a 5-second timeout, so a slow `openssl` or `systemctl` never blocks the login, and uses the same look as the CLI.
 
 ```bash
-install -m 755 /tmp/xcert/etc/update-motd.d/99-cert-status /etc/update-motd.d/
+install -m 755 /opt/xcert/etc/update-motd.d/99-cert-status /etc/update-motd.d/
 ```
 
-Debian and Ubuntu show it through `pam_motd` (`UsePAM yes` in `sshd_config`, the default). If the files were copied from Windows, strip the line endings first: `sed -i 's/\r$//' <file>`. Set `XCERT_ROOT` in the script when xCert lives somewhere other than `/root/.xcert`.
+Debian and Ubuntu show it through `pam_motd` (`UsePAM yes` in `sshd_config`, the default). If the files were copied from Windows, strip the line endings first: `sed -i 's/\r$//' <file>`. Set `XCERT_ROOT` in the script, and `ExecStart` / `WorkingDirectory` in `xcert.service`, when xCert lives somewhere other than `/opt/xcert`.
 
 ## Log rotation
 
 ```
-/var/log/xcert_*.log {
+/opt/xcert/logs/xcert_*.log {
     weekly
     rotate 12
     compress
@@ -259,7 +276,7 @@ Save as `/etc/logrotate.d/xcert`. Certbot rotates its own logs in `certbot_logs_
 
 ## Security
 
-- Never commit `config.json` or credentials files; the repository's `.gitignore` already excludes `config.json`.
+- Never commit `config.json` or credentials files; `.gitignore` already excludes `config/config.json`, `secrets/` and `logs/`.
 - Keep credentials files at `chmod 600` and tokens scoped to the zones you need.
 - Certbot runs without a shell, with argument lists and a timeout; domains and emails are validated before they reach the command.
 - Config edits are written to a temporary file and swapped in atomically, so an interrupted save never leaves a broken `config.json`.
