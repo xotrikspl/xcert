@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest import mock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "root", ".xcert"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import json_loader  # noqa: E402
 import main  # noqa: E402

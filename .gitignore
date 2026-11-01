@@ -1,15 +1,19 @@
 .idea/*
-root/.xcert/config.json
 __pycache__/
 *.pyc
 .tmp/
 .connect/
 .claude/settings.local.json
 .claude/.headroom_*
-root/.xcert/logs/
+
+# Local config, logs and credentials stay on the machine
+config/config.json
+logs/*
+!logs/.gitkeep
+secrets/*
+!secrets/.gitkeep
 
 # Credentials, keys and certificates never belong in the repo
-secrets/
 *.ini
 .ovhapi
 *.pem

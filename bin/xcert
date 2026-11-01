@@ -1,2 +1,3 @@
 #!/bin/sh
-exec python3 /root/.xcert/main.py "$@"
+# Symlinked into /usr/local/bin; resolves the real repo location.
+exec python3 "$(dirname "$(readlink -f "$0")")/../src/main.py" "$@"

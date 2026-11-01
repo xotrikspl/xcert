@@ -19,8 +19,8 @@ from json_loader import load_config, save_config
 VERSION = "1.3.0"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-XCERT_ROOT = SCRIPT_DIR
-DEFAULT_CONFIG_PATH = os.path.join(XCERT_ROOT, "config.json")
+XCERT_ROOT = os.path.dirname(SCRIPT_DIR)
+DEFAULT_CONFIG_PATH = os.path.join(XCERT_ROOT, "config", "config.json")
 
 # ======================
 # RATE LIMIT SIGNATURES
@@ -584,7 +584,7 @@ def generate_cert_report(config: Dict, logger: logging.Logger) -> str:
             report["domains"][domain] = {"status": "error", "error": str(e)}
             logger.error(f"Error reading certificate for {domain}: {e}")
 
-    report_path = general_path(general, "report", os.path.join(XCERT_ROOT, "xcert_report.json"))
+    report_path = general_path(general, "report", os.path.join(XCERT_ROOT, "logs", "xcert_report.json"))
     report_dir = os.path.dirname(report_path)
     if report_dir:
         os.makedirs(report_dir, exist_ok=True)

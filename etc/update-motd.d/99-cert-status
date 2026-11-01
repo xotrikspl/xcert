@@ -2,8 +2,8 @@
 # Certificate status at SSH login, drawn by xCert in the configured look.
 # The timeout keeps a slow openssl or systemctl call from blocking the login.
 
-XCERT_ROOT="${XCERT_ROOT:-/root/.xcert}"
+XCERT_ROOT="${XCERT_ROOT:-/opt/xcert}"
 
 echo
-timeout 5 python3 "$XCERT_ROOT/main.py" --config "$XCERT_ROOT/config.json" --motd 2>/dev/null \
+timeout 5 python3 "$XCERT_ROOT/src/main.py" --motd 2>/dev/null \
     || echo "xCert: status unavailable, run: xcert --list"
