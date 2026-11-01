@@ -3,8 +3,8 @@ __pycache__/
 *.pyc
 .tmp/
 .connect/
-.claude/settings.local.json
-.claude/.headroom_*
+.claude/
+.serena/
 
 # Local config, logs and credentials stay on the machine
 config/config.json
