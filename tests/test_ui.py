@@ -8,6 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import i18n  # noqa: E402
 import json_loader  # noqa: E402
 import main  # noqa: E402
 import ui  # noqa: E402
@@ -46,15 +47,28 @@ def screens(p):
 
 
 class RenderTest(unittest.TestCase):
-    def test_every_look_mode_and_background_fits_80_columns(self):
-        for theme in ui.THEMES:
-            for mode in ("full", "16", "none"):
-                for bg in ui.BACKGROUNDS:
-                    p = ui.Painter(theme, mode, bg)
-                    for text in screens(p):
-                        for line in text.split("\n"):
-                            with self.subTest(theme=theme, mode=mode, bg=bg, line=ui.ANSI_RE.sub("", line)):
-                                self.assertLessEqual(ui.visible_len(line), ui.WIDTH)
+    def tearDown(self):
+        i18n.set_language("en")
+
+    def test_every_look_mode_background_and_language_fits_80_columns(self):
+        for lang in i18n.LANGUAGES:
+            i18n.set_language(lang)
+            for theme in ui.THEMES:
+                for mode in ("full", "16", "none"):
+                    for bg in ui.BACKGROUNDS:
+                        p = ui.Painter(theme, mode, bg)
+                        for text in screens(p):
+                            for line in text.split("\n"):
+                                with self.subTest(lang=lang, theme=theme, mode=mode, bg=bg,
+                                                  line=ui.ANSI_RE.sub("", line)):
+                                    self.assertLessEqual(ui.visible_len(line), ui.WIDTH)
+
+    def test_polish_screens_are_translated(self):
+        i18n.set_language("pl")
+        text = ui.render_list(ui.Painter("ledger", "none"), CTX, STATES)
+        self.assertIn("certyfikaty", text)
+        self.assertIn("następny przebieg pon 2.11 01:00", text)
+        self.assertNotIn("next run", text)
 
     def test_plain_mode_emits_no_escape_codes(self):
         for theme in ui.THEMES:
