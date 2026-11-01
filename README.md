@@ -118,7 +118,7 @@ xcert --version
 xcert --auto --debug           # verbose logging, combines with any flag
 ```
 
-Every command accepts `--config PATH` (default: `config/config.json` in the repository) and the appearance overrides below. `--auto` exits with code 1 when any certificate fails, so the systemd unit shows up as failed.
+Every command accepts `--config PATH` (default: `config/config.json` in the repository), `--lang en|pl` and the appearance overrides below. `--auto` exits with code 1 when any certificate fails, so the systemd unit shows up as failed.
 
 ## Appearance
 
@@ -161,7 +161,8 @@ xcert --list --theme console --colors 16 --background light
     "backoff_jitter_seconds": 15,
     "command_timeout_seconds": 900,
     "sleep_between_domains_seconds": 10,
-    "dry_run": 0
+    "dry_run": 0,
+    "language": "en"
   },
   "appearance": {
     "theme": "ledger",
@@ -206,6 +207,7 @@ xcert --list --theme console --colors 16 --background light
 | `command_timeout_seconds` | `900` | Certbot run is killed after this long. |
 | `sleep_between_domains_seconds` | `10` | Pause between certificates, keeps DNS APIs calm. |
 | `dry_run` | `0` | `1` makes every run a dry run, same as `--dry-run`. |
+| `language` | `en` | Language of the CLI, menu, `--help` and MOTD: `en` or `pl`. `--lang` overrides it for one command. Logs and the JSON report stay in English. |
 
 `retry_count` and `retry_delay_seconds` from older configs still work as aliases of `max_retries` and `base_backoff_seconds`.
 
