@@ -12,7 +12,9 @@ import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
+import i18n
 import ui
+from i18n import t
 from json_loader import load_config, save_config
 
 
@@ -509,6 +511,11 @@ def validate_config(
             logger.error(f"Unknown provider '{provider_name}' for domain {domain}")
             valid = False
 
+    language = general.get("language")
+    if language is not None and language not in i18n.LANGUAGES:
+        logger.error(f"general.language = '{language}' is not one of: {', '.join(i18n.LANGUAGES)}")
+        valid = False
+
     appearance = config.get("appearance", {})
     for key, allowed in (("theme", ui.THEMES), ("colors", ui.COLOR_MODES), ("background", ui.BACKGROUNDS)):
         value = appearance.get(key)
@@ -531,12 +538,12 @@ def prompt_domain_filters(config: Dict, logger: logging.Logger) -> List[str]:
         logger.warning("No domains in config")
         return []
 
-    print("\nEnter domains to validate (comma-separated, Enter = all):")
-    print("Available domains:")
+    print("\n" + t("Enter domains to validate (comma-separated, Enter = all):"))
+    print(t("Available domains:"))
     for entry in domains:
         print(f"  - {entry.get('domain', '')}")
 
-    raw = input("Domains: ").strip()
+    raw = input(t("Domains: ")).strip()
     if not raw:
         return []
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -707,10 +714,10 @@ def edit_config_interactive(config_path: str, logger: logging.Logger) -> None:
 
         default_prov = general.get("default_provider")
         if not default_prov:
-            print("\n⚠️ Warning: No default provider set in configuration.")
-            available = ", ".join(config.get("providers", {}).keys()) or "none"
-            print(f"Available providers: {available}")
-            default_prov = input("Enter default provider: ").strip()
+            print("\n⚠️ " + t("Warning: No default provider set in configuration."))
+            available = ", ".join(config.get("providers", {}).keys()) or t("none")
+            print(t("Available providers: {names}", names=available))
+            default_prov = input(t("Enter default provider: ")).strip()
             if default_prov:
                 general["default_provider"] = default_prov
             else:
@@ -719,17 +726,17 @@ def edit_config_interactive(config_path: str, logger: logging.Logger) -> None:
 
         while True:
             print(f"\n{Colors.BOLD}{Colors.YELLOW}" + "=" * 60 + Colors.RESET)
-            print(f"{Colors.BOLD}{Colors.YELLOW}🔧 EDIT xCert CONFIGURATION{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.YELLOW}🔧 {t('EDIT xCert CONFIGURATION')}{Colors.RESET}")
             print(f"{Colors.BOLD}{Colors.YELLOW}" + "=" * 60 + Colors.RESET)
-            print(f"{Colors.CYAN}🔧 Default provider: {Colors.BRIGHT_GREEN}{default_prov}{Colors.RESET}")
+            print(f"{Colors.CYAN}🔧 {t('Default provider:')} {Colors.BRIGHT_GREEN}{default_prov}{Colors.RESET}")
             print(
-                f"{Colors.CYAN}📝 Logging: "
+                f"{Colors.CYAN}📝 {t('Logging:')} "
                 f"{Colors.BRIGHT_GREEN if general.get('logs', 1) == 1 else Colors.BRIGHT_RED}"
-                f"{'Enabled' if general.get('logs', 1) == 1 else 'Disabled'}{Colors.RESET}"
+                f"{t('Enabled') if general.get('logs', 1) == 1 else t('Disabled')}{Colors.RESET}"
             )
 
             if domains:
-                print(f"\n{Colors.CYAN}🌐 Configured domains ({len(domains)}):{Colors.RESET}")
+                print(f"\n{Colors.CYAN}🌐 {t('Configured domains ({n}):', n=len(domains))}{Colors.RESET}")
                 max_dom_len = max(len(d["domain"]) for d in domains)
                 max_email_len = max(len(d["email"]) for d in domains)
                 for i, d in enumerate(domains, 1):
@@ -738,32 +745,32 @@ def edit_config_interactive(config_path: str, logger: logging.Logger) -> None:
                     email_part = d["email"].ljust(max_email_len)
                     print(
                         f"  {i}. {Colors.GREEN}{dom_part}{Colors.RESET} | "
-                        f"email: {Colors.BLUE}{email_part}{Colors.RESET} | "
-                        f"provider: {Colors.MAGENTA}{prov}{Colors.RESET}"
+                        f"{t('email:')} {Colors.BLUE}{email_part}{Colors.RESET} | "
+                        f"{t('provider:')} {Colors.MAGENTA}{prov}{Colors.RESET}"
                     )
             else:
-                print(f"\n{Colors.YELLOW}🌐 No domains configured.{Colors.RESET}")
+                print(f"\n{Colors.YELLOW}🌐 {t('No domains configured.')}{Colors.RESET}")
 
-            print(f"\n{Colors.BOLD}What would you like to do?{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.GREEN}1. ➕ Add domain{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.RED}2. 🗑️  Remove domain{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.BLUE}3. ✏️  Edit domain / email{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.MAGENTA}4. 🔁 Change domain's provider{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.YELLOW}5. ⚙️  Change default provider{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.CYAN}6. 📝 Toggle logging{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.CYAN}7. 🧪 Validate config{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.GREEN}8. 💾 Save and exit{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.RED}9. ❌ Cancel{Colors.RESET}")
+            print(f"\n{Colors.BOLD}{t('What would you like to do?')}{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.GREEN}1. ➕ {t('Add domain')}{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.RED}2. 🗑️  {t('Remove domain')}{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.BLUE}3. ✏️  {t('Edit domain / email')}{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.MAGENTA}4. 🔁 {t('Change domain provider')}{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.YELLOW}5. ⚙️  {t('Change default provider')}{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.CYAN}6. 📝 {t('Toggle logging')}{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.CYAN}7. 🧪 {t('Validate config')}{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.GREEN}8. 💾 {t('Save and exit')}{Colors.RESET}")
+            print(f"{Colors.BOLD}{Colors.RED}9. ❌ {t('Cancel')}{Colors.RESET}")
 
-            choice = input(f"\n{Colors.BOLD}Choose option (1-9): {Colors.RESET}").strip()
+            choice = input(f"\n{Colors.BOLD}{t('Choose option (1-9): ')}{Colors.RESET}").strip()
 
             if choice == "1":
-                domain = input("  Domain: ").strip()
-                email = input("  Email: ").strip()
-                use_default = input(f"  Use default provider ({default_prov})? (Y/n): ").strip().lower()
-                if use_default in ("n", "no"):
+                domain = input("  " + t("Domain: ")).strip()
+                email = input("  " + t("Email: ")).strip()
+                use_default = input("  " + t("Use default provider ({name})? (Y/n): ", name=default_prov)).strip().lower()
+                if use_default in ("n", "no", "nie"):
                     prov_list = ", ".join(config.get("providers", {}).keys())
-                    provider = input(f"  Provider (available: {prov_list}): ").strip()
+                    provider = input("  " + t("Provider (available: {names}): ", names=prov_list)).strip()
                     if not provider or provider not in config.get("providers", {}):
                         logger.error("Invalid provider. Operation cancelled.")
                         continue
@@ -785,30 +792,32 @@ def edit_config_interactive(config_path: str, logger: logging.Logger) -> None:
 
             elif choice == "2":
                 if not domains:
-                    print("  No domains to remove.")
+                    print("  " + t("No domains to remove."))
                     continue
                 try:
-                    idx = int(input("  Domain number to remove: ")) - 1
+                    idx = int(input("  " + t("Domain number to remove: "))) - 1
                     if 0 <= idx < len(domains):
                         removed = domains.pop(idx)
                         logger.info(f"Removed: {removed['domain']}")
                     else:
-                        print("  Invalid number.")
+                        print("  " + t("Invalid number."))
                 except ValueError:
-                    print("  Please enter a number.")
+                    print("  " + t("Please enter a number."))
 
             elif choice == "3":
                 if not domains:
-                    print("  No domains to edit.")
+                    print("  " + t("No domains to edit."))
                     continue
                 try:
-                    idx = int(input("  Domain number to edit: ")) - 1
+                    idx = int(input("  " + t("Domain number to edit: "))) - 1
                     if not (0 <= idx < len(domains)):
-                        print("  Invalid number.")
+                        print("  " + t("Invalid number."))
                         continue
                     current = domains[idx]
-                    new_domain = input(f"  New domain [Enter = {current['domain']}]: ").strip() or current["domain"]
-                    new_email = input(f"  New email  [Enter = {current['email']}]: ").strip() or current["email"]
+                    new_domain = input("  " + t("New domain [Enter = {value}]: ", value=current["domain"])).strip() \
+                        or current["domain"]
+                    new_email = input("  " + t("New email  [Enter = {value}]: ", value=current["email"])).strip() \
+                        or current["email"]
                     if not is_valid_domain(new_domain):
                         logger.error(f"Invalid domain: {new_domain}")
                         continue
@@ -819,30 +828,30 @@ def edit_config_interactive(config_path: str, logger: logging.Logger) -> None:
                     current["email"] = new_email
                     logger.info(f"Updated entry #{idx + 1}: {new_domain}")
                 except ValueError:
-                    print("  Please enter a number.")
+                    print("  " + t("Please enter a number."))
 
             elif choice == "4":
                 if not domains:
-                    print("  No domains to edit.")
+                    print("  " + t("No domains to edit."))
                     continue
                 try:
-                    idx = int(input("  Domain number to change provider: ")) - 1
+                    idx = int(input("  " + t("Domain number to change provider: "))) - 1
                     if not (0 <= idx < len(domains)):
-                        print("  Invalid number.")
+                        print("  " + t("Invalid number."))
                         continue
                     prov_list = ", ".join(config.get("providers", {}).keys())
-                    new_provider = input(f"  New provider (available: {prov_list}): ").strip()
+                    new_provider = input("  " + t("New provider (available: {names}): ", names=prov_list)).strip()
                     if not new_provider or new_provider not in config.get("providers", {}):
                         logger.error("Invalid provider.")
                         continue
                     domains[idx]["provider"] = new_provider
                     logger.info(f"Changed provider for {domains[idx]['domain']} to {new_provider}")
                 except ValueError:
-                    print("  Please enter a number.")
+                    print("  " + t("Please enter a number."))
 
             elif choice == "5":
                 prov_list = ", ".join(config.get("providers", {}).keys())
-                new_provider = input(f"  New default provider (available: {prov_list}): ").strip()
+                new_provider = input("  " + t("New default provider (available: {names}): ", names=prov_list)).strip()
                 if new_provider and new_provider in config.get("providers", {}):
                     general["default_provider"] = new_provider
                     default_prov = new_provider
@@ -866,11 +875,11 @@ def edit_config_interactive(config_path: str, logger: logging.Logger) -> None:
                 break
 
             elif choice == "9":
-                print(f"{Colors.BRIGHT_RED}❌ Cancelled — configuration unchanged.{Colors.RESET}")
+                print(f"{Colors.BRIGHT_RED}❌ {t('Cancelled, configuration unchanged.')}{Colors.RESET}")
                 break
 
             else:
-                print("⚠️ Invalid choice.")
+                print("⚠️ " + t("Invalid choice."))
 
     except Exception as e:
         logger.error(f"{Colors.BRIGHT_RED}❌ Error during configuration edit: {e}{Colors.RESET}")
@@ -906,9 +915,9 @@ def interactive_menu(config: Dict, logger: logging.Logger, config_path: str,
         if choice == "o":
             cert_auto(config, logger, painter=painter)
         elif choice == "w":
-            domain = input("Domain: ").strip()
-            email = input("Email: ").strip()
-            provider = input("Provider (e.g. ovh, cloudflare) [Enter = default]: ").strip() or None
+            domain = input(t("Domain: ")).strip()
+            email = input(t("Email: ")).strip()
+            provider = input(t("Provider (e.g. ovh, cloudflare) [Enter = default]: ")).strip() or None
             if not domain or not email:
                 logger.error("Domain and email are required.")
                 continue
@@ -941,28 +950,49 @@ def interactive_menu(config: Dict, logger: logging.Logger, config_path: str,
 # ======================
 # MAIN
 # ======================
+def configured_language(config_path: str) -> Optional[str]:
+    """general.language from config.json, or None when the config is missing or broken."""
+    try:
+        return load_config(config_path=resolve_project_path(config_path)).get("general", {}).get("language")
+    except Exception:
+        return None
+
+
 def main() -> None:
+    # Pick the language before building the parser, so --help is translated too.
+    early = argparse.ArgumentParser(add_help=False)
+    early.add_argument("--lang", choices=i18n.LANGUAGES)
+    early.add_argument("--config", default=DEFAULT_CONFIG_PATH)
+    early_args, _ = early.parse_known_args()
+    i18n.set_language(early_args.lang or configured_language(early_args.config))
+
     parser = argparse.ArgumentParser(
-        description="xCert – Universal Let's Encrypt certificate automation with 13+ DNS provider support"
+        description=t("xCert - Let's Encrypt certificate automation with 13+ DNS providers"), add_help=False
     )
-    parser.add_argument("--version", "-V", action="version", version=f"xCert {VERSION}")
-    parser.add_argument("-a", "--auto", action="store_true", help="Automatic certification for all configured domains")
-    parser.add_argument("--email", help="Email address (manual mode)")
-    parser.add_argument("--domain", help="Domain name (manual mode)")
-    parser.add_argument("--provider", help="DNS provider (e.g. 'cloudflare', 'ovh') — manual mode only")
-    parser.add_argument("--dry-run", action="store_true", help="Dry run — passes --dry-run to certbot (no certificate issued)")
-    parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging")
-    parser.add_argument("--report", action="store_true", help="Generate a certificate validity report")
-    parser.add_argument("--list", action="store_true", help="List all configured domains and their certificate status")
-    parser.add_argument("--menu", action="store_true", help="Launch interactive text menu")
-    parser.add_argument("--edit-config", action="store_true", help="Edit config.json interactively")
-    parser.add_argument("--validate-config", action="store_true", help="Validate config.json and provider credentials")
-    parser.add_argument("--validate-domain", action="append", metavar="DOMAIN", help="Limit --validate-config to specific domain(s) — can be repeated")
-    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help=f"Path to config.json (default: {DEFAULT_CONFIG_PATH})")
-    parser.add_argument("--motd", action="store_true", help="Print the short certificate status used at SSH login")
-    parser.add_argument("--theme", choices=ui.THEMES, help="Look for this run: ledger, timeline or console")
-    parser.add_argument("--colors", choices=ui.COLOR_MODES, help="Colours for this run: auto, full (24-bit), 16 or none")
-    parser.add_argument("--background", choices=ui.BACKGROUNDS, help="Palette for a dark or light terminal")
+    parser.add_argument("-h", "--help", action="help", help=t("Show this help message and exit"))
+    parser.add_argument("--version", "-V", action="version", version=f"xCert {VERSION}",
+                        help=t("Show the version and exit"))
+    parser.add_argument("-a", "--auto", action="store_true", help=t("Automatic certification for all configured domains"))
+    parser.add_argument("--email", help=t("Email address (manual mode)"))
+    parser.add_argument("--domain", help=t("Domain name (manual mode)"))
+    parser.add_argument("--provider", help=t("DNS provider (e.g. 'cloudflare', 'ovh'), manual mode only"))
+    parser.add_argument("--dry-run", action="store_true",
+                        help=t("Dry run: passes --dry-run to certbot (no certificate issued)"))
+    parser.add_argument("--debug", action="store_true", help=t("Enable verbose debug logging"))
+    parser.add_argument("--report", action="store_true", help=t("Generate a certificate validity report"))
+    parser.add_argument("--list", action="store_true", help=t("List all configured domains and their certificate status"))
+    parser.add_argument("--menu", action="store_true", help=t("Launch interactive text menu"))
+    parser.add_argument("--edit-config", action="store_true", help=t("Edit config.json interactively"))
+    parser.add_argument("--validate-config", action="store_true", help=t("Validate config.json and provider credentials"))
+    parser.add_argument("--validate-domain", action="append", metavar="DOMAIN",
+                        help=t("Limit --validate-config to specific domain(s), can be repeated"))
+    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
+                        help=t("Path to config.json (default: {path})", path=DEFAULT_CONFIG_PATH))
+    parser.add_argument("--motd", action="store_true", help=t("Print the short certificate status used at SSH login"))
+    parser.add_argument("--theme", choices=ui.THEMES, help=t("Look for this run: ledger, timeline or console"))
+    parser.add_argument("--colors", choices=ui.COLOR_MODES, help=t("Colours for this run: auto, full (24-bit), 16 or none"))
+    parser.add_argument("--background", choices=ui.BACKGROUNDS, help=t("Palette for a dark or light terminal"))
+    parser.add_argument("--lang", choices=i18n.LANGUAGES, help=t("Language for this run: en or pl"))
 
     args = parser.parse_args()
 

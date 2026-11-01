@@ -15,7 +15,8 @@
     "backoff_jitter_seconds": 15,
     "command_timeout_seconds": 900,
     "sleep_between_domains_seconds": 10,
-    "dry_run": 0
+    "dry_run": 0,
+    "language": "en"
   },
   "appearance": {
     "theme": "ledger",

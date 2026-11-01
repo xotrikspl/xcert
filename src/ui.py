@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from i18n import t
+
 THEMES = ("ledger", "timeline", "console")
 COLOR_MODES = ("auto", "full", "16", "none")
 BACKGROUNDS = ("dark", "light")
@@ -194,17 +196,17 @@ def grad_role(days: Optional[int], threshold: int) -> str:
 def status_text(s: CertState) -> str:
     cat = category(s, 10 ** 6)
     if cat == "missing":
-        return "no certificate"
+        return t("no certificate")
     if cat == "unreadable":
-        return "certificate unreadable"
+        return t("certificate unreadable")
     if cat == "expired":
-        return f"expired {-s.days_left} days ago"
-    return f"{s.days_left} days left"
+        return t("expired {n} days ago", n=-s.days_left)
+    return t("{n} days left", n=s.days_left)
 
 
 def short_status(s: CertState) -> str:
     cat = category(s, 10 ** 6)
-    return {"missing": "none", "unreadable": "n/a", "expired": "expired"}.get(cat, f"{s.days_left} d")
+    return {"missing": t("none"), "unreadable": t("n/a"), "expired": t("expired")}.get(cat, f"{s.days_left} d")
 
 
 COUNT_LABELS = (("ok", "ok", "ok"), ("due", "due", "warn"), ("critical", "expiring", "err"),
@@ -255,11 +257,13 @@ def row(left: str, right: str, width: int = INNER) -> str:
 
 
 def day(dt: datetime) -> str:
-    return f"{WEEKDAYS[dt.weekday()]} {dt.day}.{dt.month}"
+    return f"{t(WEEKDAYS[dt.weekday()])} {dt.day}.{dt.month}"
 
 
 def run_label(ctx: Context) -> str:
-    return f"next run {day(ctx.next_run)} {ctx.next_run:%H:%M}" if ctx.next_run else "timer not active"
+    if not ctx.next_run:
+        return t("timer not active")
+    return t("next run {when}", when=f"{day(ctx.next_run)} {ctx.next_run:%H:%M}")
 
 
 def duration(seconds: float) -> str:
@@ -290,17 +294,18 @@ def _counts_line(p: Painter, states: Sequence[CertState], ctx: Context, sep: str
     parts = []
     for n, label, lvl in counts(states, ctx.threshold):
         dot = "○" if label == "missing" else "●"
-        parts.append(p.fg(lvl, dot) + f" {n} {label}")
-    return sep.join(parts) if parts else p.dim("no certificates configured")
+        parts.append(p.fg(lvl, dot) + f" {n} {t(label)}")
+    return sep.join(parts) if parts else p.dim(t("no certificates configured"))
 
 
 def _failures(p: Painter, results: Sequence[Tuple[str, bool]], indent: str = "") -> List[str]:
     failed = [label for label, ok in results if not ok]
     if not failed:
         return []
-    return ["", indent + "failed: " + ", ".join(p.fg("err", f) for f in failed),
-            indent + "check " + p.fg("accent", "xcert --validate-config", bold=True)
-            + " and the error log, then run " + p.fg("accent", "xcert --auto", bold=True)]
+    return ["", indent + t("failed:") + " " + ", ".join(p.fg("err", f) for f in failed),
+            indent + t("check {validate} and the error log, then run {auto}",
+                       validate=p.fg("accent", "xcert --validate-config", bold=True),
+                       auto=p.fg("accent", "xcert --auto", bold=True))]
 
 
 # ======================
@@ -316,27 +321,27 @@ def _ledger_header(p: Painter, ctx: Context, sub: str = "") -> List[str]:
 
 
 def ledger_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
-    out = _ledger_header(p, ctx, "certificates")
-    out.append("  " + p.dim(pad("certificate", 26) + pad("provider", 13) + pad("expires", 11)
-                            + rpad("days", 4) + "  after renewal"))
+    out = _ledger_header(p, ctx, t("certificates"))
+    out.append("  " + p.dim(pad(t("certificate"), 26) + pad(t("provider"), 13) + pad(t("expires"), 11)
+                            + rpad(t("days"), 4) + "  " + t("after renewal")))
     for s in states:
         lvl = level(s, ctx.threshold)
         if s.expires is None:
-            mid = p.fg("err", pad(status_text(s), 15))
+            mid = p.fg("err", pad(clip(status_text(s), 15), 15))
         else:
             mid = pad(f"{s.expires:%d.%m.%Y}", 11) + p.fg(lvl, rpad(str(s.days_left), 4), bold=True)
         out.append(p.fg(lvl, "○" if not s.present else "●") + " " + pad(clip(s.name, 25), 26)
                    + p.dim(pad(clip(s.provider, 12), 13)) + mid + "  " + p.dim(clip(s.reload, INNER - 58)))
         out.extend("  " + p.dim("+ " + san) for san in s.sans)
     out += [_ledger_rule(p), _counts_line(p, states, ctx, ", "),
-            p.dim(f"renewal threshold {ctx.threshold} days, {run_label(ctx)}")]
+            p.dim(t("renewal threshold {n} days", n=ctx.threshold) + ", " + run_label(ctx))]
     return "\n".join(out)
 
 
 def ledger_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -> str:
     ok = sum(1 for _, s in results if s)
-    left = p.fg("ok", f"renewed {ok}") + "   " + (p.fg("err", f"failed {len(results) - ok}") if ok < len(results)
-                                                    else p.dim("failed 0"))
+    left = p.fg("ok", t("renewed {n}", n=ok)) + "   " + (p.fg("err", t("failed {n}", n=len(results) - ok))
+                                                          if ok < len(results) else p.dim(t("failed {n}", n=0)))
     return "\n".join([_ledger_rule(p), row(left, p.dim(duration(elapsed)))] + _failures(p, results))
 
 
@@ -351,11 +356,11 @@ def ledger_motd(p: Painter, ctx: Context, states) -> str:
     bad = [s for s in states if level(s, ctx.threshold) == "err"]
     head = p.fg("accent", "xCert", bold=True) + "  "
     if not bad:
-        return row(head + p.fg("ok", f"{len(states)} certificates OK"), p.dim(run_label(ctx)))
-    out = [row(head + f"{len(states)} certificates, " + p.fg("err", f"{len(bad)} need attention"),
+        return row(head + p.fg("ok", t("{n} certificates OK", n=len(states))), p.dim(run_label(ctx)))
+    out = [row(head + t("{n} certificates", n=len(states)) + ", " + p.fg("err", t("{n} need attention", n=len(bad))),
                p.dim(run_label(ctx)))]
     out += [f"  {p.fg('err', '○' if not s.present else '●')} {pad(clip(s.name, 25), 26)} {status_text(s)}" for s in bad]
-    return "\n".join(out + ["  " + p.dim("details: xcert --list")])
+    return "\n".join(out + ["  " + p.dim(t("details:") + " xcert --list")])
 
 
 # ======================
@@ -407,7 +412,7 @@ def _strip(p: Painter, states, ctx: Context) -> str:
             marks[min(AXIS_COLS - 1, max(0, round(s.days_left / 2)))] = level(s, ctx.threshold)
     runs = set(_run_cols(ctx))
     cells = [(marks[i], "◆") if i in marks else ("dim", "┬" if i in runs else "─") for i in range(AXIS_COLS)]
-    return p.dim("today ") + _runs(cells, p) + p.dim(" +90 d")
+    return p.dim(t("today") + " ") + _runs(cells, p) + p.dim(" +90 d")
 
 
 def _axis_labels(p: Painter, ctx: Context) -> List[str]:
@@ -422,7 +427,7 @@ def _axis_labels(p: Painter, ctx: Context) -> List[str]:
         if col + len(text) <= AXIS_COLS and all(c == " " for c in labels[max(0, col - 1):col + len(text) + 1]):
             labels[col:col + len(text)] = list(text)
 
-    put(0, "today")
+    put(0, t("today"))
     put(AXIS_COLS - 5, "+90 d")
     month = (ctx.now.replace(day=1) + timedelta(days=32)).replace(day=1)
     while (month - ctx.now).days < AXIS_DAYS:
@@ -433,33 +438,33 @@ def _axis_labels(p: Painter, ctx: Context) -> List[str]:
 
 def timeline_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
     out = [_lane(p, s, ctx) for s in states] + _axis_labels(p, ctx)
-    out.append(p.dim(f"━ valid   ╍ renewal window ({ctx.threshold} days)   ◆ expiry"
-                     + ("   ▴ timer run" if ctx.next_run else "")))
+    out.append(p.dim("━ " + t("valid") + "   ╍ " + t("renewal window ({n} days)", n=ctx.threshold)
+                     + "   ◆ " + t("expiry") + ("   ▴ " + t("timer run") if ctx.next_run else "")))
     plan = plan_runs(states, ctx)
     if plan:
-        out += ["", p.bold("upcoming runs")]
+        out += ["", p.bold(t("upcoming runs"))]
         for when, group in plan:
             items = [(s.name, p.fg(level(s, ctx.threshold), s.name)) for s in group]
             lines = wrap_join(items, INNER - 14, 14)
             out.append("  " + p.fg("accent", pad(day(when), 10)) + "  " + lines[0])
             out += lines[1:]
     else:
-        out += ["", p.dim("timer not active, nothing will renew on its own")]
+        out += ["", p.dim(t("timer not active, nothing will renew on its own"))]
     return "\n".join(out)
 
 
 def timeline_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -> str:
     cols = 40
     scale = max(elapsed, 1.0) / cols
-    out = [p.dim(f"run took {duration(elapsed)}, 1 char = {duration(scale)}")]
+    out = [p.dim(t("run took {elapsed}, 1 char = {scale}", elapsed=duration(elapsed), scale=duration(scale)))]
     for (label, ok), (start, length) in zip(results, timings):
         lead = min(cols - 1, int(start / scale))
         bar = "█" * max(1, min(cols - lead, round(length / scale))) if length >= 1 else "·"
         out.append("  " + pad(clip(label, 24), 25) + " " * lead + p.fg("ok" if ok else "err", bar)
-                   + " " * max(1, cols - lead - len(bar) + 1) + (p.fg("ok", "done") if ok else p.fg("err", "failed")))
+                   + " " * max(1, cols - lead - len(bar) + 1) + (p.fg("ok", t("done")) if ok else p.fg("err", t("failed"))))
     ok = sum(1 for _, s in results if s)
-    out += ["", p.fg("ok", f"done {ok}") + "  " + (p.fg("err", f"failed {len(results) - ok}")
-                                                   if ok < len(results) else p.dim("failed 0"))]
+    out += ["", p.fg("ok", t("done {n}", n=ok)) + "  " + (p.fg("err", t("failed {n}", n=len(results) - ok))
+                                                          if ok < len(results) else p.dim(t("failed {n}", n=0)))]
     return "\n".join(out + _failures(p, results))
 
 
@@ -495,7 +500,7 @@ def _bar(p: Painter, segments: Sequence[Optional[Tuple[str, str, bool]]]) -> str
 def _title(p: Painter, ctx: Context, states, sub: str) -> str:
     segs: List[Optional[Tuple[str, str, bool]]] = [("bar", f" xCert {ctx.version} ", True), ("bar", f" {sub} ", False), None]
     for n, label, lvl in counts(states, ctx.threshold):
-        segs.append((lvl, f" {n} {label} ", False))
+        segs.append((lvl, f" {n} {t(label)} ", False))
     segs.append(("bar", f" {clip(ctx.host, 16)} ", False))
     return _bar(p, segs)
 
@@ -525,41 +530,43 @@ def _fkeys(p: Painter, items) -> str:
 
 
 def console_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
-    out = [_title(p, ctx, states, "certificates"),
-           p.chip("bar", pad("  state    certificate                provider     expires    validity", WIDTH))]
+    head = "  " + pad(t("state"), 9) + pad(t("certificate"), 27) + pad(t("provider"), 13) + pad(t("expires"), 11)
+    out = [_title(p, ctx, states, t("certificates")), p.chip("bar", pad(head + t("validity"), WIDTH))]
     for s in states:
         cat = category(s, ctx.threshold)
-        out.append(" " + _tag(p, level(s, ctx.threshold), TAGS[cat]) + " " + pad(clip(s.name, 26), 27)
+        out.append(" " + _tag(p, level(s, ctx.threshold), t(TAGS[cat])) + " " + pad(clip(s.name, 26), 27)
                    + p.dim(pad(clip(s.provider, 12), 13)) + pad(f"{s.expires:%d.%m.%Y}" if s.expires else "-", 11)
                    + _meter(p, s, ctx, 16))
         out.extend(" " * 10 + p.dim("+ " + san) for san in s.sans)
-    out.append(_bar(p, [("bar", f" threshold {ctx.threshold} days ", False), None, ("bar", f" {run_label(ctx)} ", False)]))
+    out.append(_bar(p, [("bar", " " + t("threshold {n} days", n=ctx.threshold) + " ", False), None,
+                        ("bar", f" {run_label(ctx)} ", False)]))
     return "\n".join(out)
 
 
 def console_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -> str:
     ok = sum(1 for _, s in results if s)
-    segs: List[Optional[Tuple[str, str, bool]]] = [("ok", f" renewed {ok} ", False)]
+    segs: List[Optional[Tuple[str, str, bool]]] = [("ok", " " + t("renewed {n}", n=ok) + " ", False)]
     if ok < len(results):
-        segs.append(("err", f" failed {len(results) - ok} ", False))
+        segs.append(("err", " " + t("failed {n}", n=len(results) - ok) + " ", False))
     segs += [None, ("bar", f" {duration(elapsed)} ", False)]
-    lines = [" " + _tag(p, "ok" if s else "err", "  OK  " if s else " FAIL ") + " " + label for label, s in results]
+    lines = [" " + _tag(p, "ok" if s else "err", t("  OK  ") if s else t(" FAIL ")) + " " + label
+             for label, s in results]
     return "\n".join(lines + [_bar(p, segs)] + _failures(p, results, "  "))
 
 
 def console_menu(p: Painter, ctx: Context, states, items) -> str:
     out = [_title(p, ctx, states, "menu"), ""]
     out += [f"  {pad(clip(s.name, 25), 26)}{_meter(p, s, ctx, 42)}" for s in states]
-    out += ["", "  " + p.dim("timer") + "  " + (p.fg("ok", "active") + ", " + run_label(ctx) if ctx.next_run
-                                                else p.fg("err", "not active")), "", _fkeys(p, items)]
+    out += ["", "  " + p.dim(t("timer")) + "  " + (p.fg("ok", t("active")) + ", " + run_label(ctx) if ctx.next_run
+                                                   else p.fg("err", t("not active"))), "", _fkeys(p, items)]
     return "\n".join(out)
 
 
 def console_motd(p: Painter, ctx: Context, states) -> str:
-    out = [_title(p, ctx, states, f"{len(states)} certificates")]
+    out = [_title(p, ctx, states, t("{n} certificates", n=len(states)))]
     for s in states:
         if level(s, ctx.threshold) == "err":
-            out.append(_tag(p, "err", TAGS[category(s, ctx.threshold)]) + f" {s.name}, {status_text(s)}")
+            out.append(_tag(p, "err", t(TAGS[category(s, ctx.threshold)])) + f" {s.name}, {status_text(s)}")
     return "\n".join(out)
 
 
@@ -582,6 +589,7 @@ def render_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -
 
 
 def render_menu(p: Painter, ctx: Context, states, items) -> str:
+    items = [(key, t(label), t(short)) for key, label, short in items]
     return RENDERERS[p.theme]["menu"](p, ctx, states, items)
 
 
@@ -590,7 +598,7 @@ def render_motd(p: Painter, ctx: Context, states) -> str:
 
 
 def prompt(p: Painter) -> str:
-    return p.fg("accent", "choose ›" if p.theme == "console" else "›") + " "
+    return p.fg("accent", t("choose ›") if p.theme == "console" else "›") + " "
 
 
 THEME_NAMES = {"ledger": "ledger", "timeline": "timeline", "console": "console"}
@@ -602,25 +610,26 @@ def render_picker(p: Painter, ctx: Context, appearance: Dict[str, str], effectiv
     sample_state = CertState("example.pl", "ovh", present=True, days_left=79,
                              expires=ctx.now + timedelta(days=79))
     samples = {
-        "ledger": p.fg("ok", "●") + " example.pl   " + p.dim("ovh") + "   " + p.fg("ok", "79 days", bold=True),
+        "ledger": p.fg("ok", "●") + " example.pl   " + p.dim("ovh") + "   " + p.fg("ok", t("{n} days", n=79), bold=True),
         "timeline": _runs([(grad_role(79 - i * 2, ctx.threshold), "╍" if 79 - i * 2 <= ctx.threshold else "━")
                            for i in range(20)] + [("ok", "◆"), ("dim", "···")], p) + " 79 d",
         "console": _meter(p, sample_state, ctx, 30),
     }
-    out = [row(p.fg("accent", "xCert", bold=True) + "  " + p.bold("look"), p.dim("saved to config.json")), ""]
+    out = [row(p.fg("accent", "xCert", bold=True) + "  " + p.bold(t("look")), p.dim(t("saved to config.json"))), ""]
     for i, theme in enumerate(THEMES, 1):
         current = theme == appearance["theme"]
         marker = p.fg("accent", "▸") if current else " "
         out.append(f"  {marker} {p.fg('accent', str(i), bold=True)}  {pad(THEME_NAMES[theme], 10)} {samples[theme]}")
-    note = "" if appearance["colors"] == effective_mode else p.dim(f"  (now {COLOR_NAMES[effective_mode]})")
+    note = "" if appearance["colors"] == effective_mode else p.dim(
+        "  " + t("(now {mode})", mode=t(COLOR_NAMES[effective_mode])))
+    keys = [("1-3", t("look")), ("c", t("colours")), ("b", t("background")), ("s", t("save")), ("q", t("back"))]
     out += ["",
-            f"  {p.fg('accent', 'c', bold=True)}  colours      {p.bold(COLOR_NAMES[appearance['colors']])}{note}",
-            f"  {p.fg('accent', 'b', bold=True)}  background   {p.bold(appearance['background'])}",
+            f"  {p.fg('accent', 'c', bold=True)}  {pad(t('colours'), 13)}"
+            f"{p.bold(t(COLOR_NAMES[appearance['colors']]))}{note}",
+            f"  {p.fg('accent', 'b', bold=True)}  {pad(t('background'), 13)}{p.bold(t(appearance['background']))}",
             "",
-            p.dim("  one-off for a single command: xcert --theme console --colors 16 --list"),
-            p.dim("  NO_COLOR, journald and cron always get plain text"),
+            p.dim("  " + t("one-off for a single command:") + " xcert --theme console --colors 16 --list"),
+            p.dim("  " + t("NO_COLOR, journald and cron always get plain text")),
             "",
-            f"  {p.fg('accent', '1-3', bold=True)} look   {p.fg('accent', 'c', bold=True)} colours   "
-            f"{p.fg('accent', 'b', bold=True)} background   {p.fg('accent', 's', bold=True)} save   "
-            f"{p.fg('accent', 'q', bold=True)} back"]
+            "  " + "   ".join(f"{p.fg('accent', k, bold=True)} {label}" for k, label in keys)]
     return "\n".join(out)
