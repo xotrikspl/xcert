@@ -28,7 +28,7 @@ git clone https://github.com/xotrikspl/xcert.git /opt/xcert
 /opt/xcert/bin/xcert --install
 ```
 
-`--install` runs as root, shows one row per step and can be run again at any time, for example after `git pull`:
+`--install` runs as root, shows one row per step and can be run again at any time:
 
 | Step | What it does |
 |------|--------------|
@@ -56,9 +56,15 @@ It ends with the full `--status` screen, so a fresh install lists what is left t
 └── tests/
 ```
 
-Updating: `cd /opt/xcert && git pull && xcert --install`. Your `config/config.json`, `secrets/` and `logs/` are ignored by git, so a pull never touches them.
-
 Prefer Certbot from snap? Install it before `--install` (`snap install --classic certbot`) and `--install` adds the plugins as snaps. Available plugins: `certbot-dns-cloudflare`, `-digitalocean`, `-dnsimple`, `-dnsmadeeasy`, `-gehirn`, `-google`, `-linode`, `-luadns`, `-nsone`, `-ovh`, `-rfc2136`, `-route53`, `-sakuracloud`.
+
+### Updating
+
+```bash
+xcert --update
+```
+
+As root, it runs `git pull --ff-only`, restarts itself with the pulled code, upgrades Certbot and every installed `certbot-*` plugin (pip in `/opt/certbot`, `snap refresh` for snaps; Certbot from distribution packages is left to `apt upgrade`), then does everything `--install` does and ends with `--status`. The first row shows the version before and after. A checkout with local commits fails the pull and stops before anything else changes. Your `config/config.json`, `secrets/` and `logs/` are ignored by git, so a pull never touches them. Without `--update` (xCert 1.7.0 or older): `cd /opt/xcert && git pull && xcert --install`.
 
 Coming from 1.2 or older (`/root/.xcert`): move `/root/.xcert/config.json` to `/opt/xcert/config/config.json`, run `xcert --install` and remove `/root/.xcert`. Absolute paths in an old config keep working.
 
@@ -106,7 +112,8 @@ xcert --list                   # certificates, days left, next timer run
 xcert --report                 # write the JSON validity report
 xcert --status                 # everything below plus Certbot, plugins, units, timer and its last run
 xcert --validate-config [--validate-domain example.com]   # config and credentials only
-xcert --install                # set up or update the server (root), see Installation
+xcert --install                # set up the server (root), see Installation
+xcert --update                 # git pull, newest Certbot and plugins, then --install (root)
 xcert --uninstall              # undo --install, keeps config, credentials and certificates
 xcert --menu                   # interactive menu
 xcert --edit-config            # interactive config editor
@@ -115,11 +122,11 @@ xcert --version
 xcert --auto --debug           # verbose logging, combines with any flag
 ```
 
-Every command accepts `--config PATH` (default: `config/config.json` in the repository), `--lang en|pl` and the appearance overrides below. `--auto` exits with code 1 when any certificate fails, so the systemd unit shows up as failed. `--status`, `--validate-config` and `--install` exit with 1 when a row shows an error.
+Every command accepts `--config PATH` (default: `config/config.json` in the repository), `--lang en|pl` and the appearance overrides below. `--auto` exits with code 1 when any certificate fails, so the systemd unit shows up as failed. `--status`, `--validate-config`, `--install` and `--update` exit with 1 when a row shows an error.
 
 `--menu` and `--edit-config` work with the arrow keys and Enter; each item's letter is a shortcut and `q` or Esc goes back. Screens redraw in place instead of scrolling. In the editor, Enter on a domain lists what you can do with it (change domain or email, change provider, remove), and providers are picked from a list, so only domains, emails and the post-renewal command are typed. Without a terminal (pipes, scripts) both read one line per choice instead.
 
-On a terminal, `--auto` and `--domain` show one progress line per certificate (skipped, renewing, done or failed, with the reason) and `--status`, `--validate-config` and `--install` show one row per check, all in the chosen look; the menu's Issue and Check use the same screens. The full log still goes to the log files; add `--debug` to see it on screen instead. Under systemd, cron and pipes both commands print the plain log as before.
+On a terminal, `--auto` and `--domain` show one progress line per certificate (skipped, renewing, done or failed, with the reason) and `--status`, `--validate-config`, `--install` and `--update` show one row per check, all in the chosen look; the menu's Issue and Check use the same screens. The full log still goes to the log files; add `--debug` to see it on screen instead. Under systemd, cron and pipes both commands print the plain log as before.
 
 `--validate-config` only checks the providers your domains use, plus `general.default_provider`; the others listed in `providers` need no credentials file and show up as one "unused providers" row. Interactive screens follow the terminal window: wider windows (up to 160 columns) stretch bars and columns, short ones scroll the domain list, and resizing the window (PuTTY, tmux) redraws the screen.
 
@@ -286,4 +293,4 @@ Use `--data-binary @-` with curl; plain `-d @-` drops the line breaks. Run `xcer
 python3 -m unittest discover -s tests
 ```
 
-The tests render every look in every colour mode and background, check the 80-column limit and the config save path, and run `--install`, `--uninstall` and `--status` against a temporary directory. They never call Certbot or touch `/etc`.
+The tests render every look in every colour mode and background, check the 80-column limit and the config save path, and run `--install`, `--update`, `--uninstall` and `--status` against a temporary directory. They never call Certbot or touch `/etc`.
