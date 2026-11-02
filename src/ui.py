@@ -732,6 +732,8 @@ def render_editor(p: Painter, ctx: Context, config: Dict, path: str, sel: int, i
     out = _head(p, ctx, t("configuration"))
     out += ["  " + p.dim(t("default provider")) + " " + p.bold(clip(default, 20)) + "   " + p.dim(t("logs")) + " " + logs,
             "  " + p.dim(t("after renewal")) + " " + clip(general.get("post_renewal_cmd") or t("none"), INNER - 20),
+            "  " + p.dim(t("on failure")) + " " + (clip(general["notify_cmd"], INNER - 20) if general.get("notify_cmd")
+                                                  else p.fg("warn", t("no notice"))),
             "  " + p.dim(t("file") + " " + clip(path, INNER - 8)), ""]
     sep = p.dim("│") if p.theme == "timeline" else " "
     if p.theme == "console":

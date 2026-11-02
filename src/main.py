@@ -1325,6 +1325,7 @@ EDITOR_ITEMS = [
     ("n", "add domain", "Add"),
     ("d", "default provider", "Default"),
     ("o", "command after renewal", "Command"),
+    ("a", "failure notice command", "Notify"),
     ("l", "toggle logs", "Logs"),
     ("v", "check configuration", "Check"),
     ("s", "save and exit", "Save"),
@@ -1440,18 +1441,22 @@ def edit_config_interactive(config_path: str, logger: logging.Logger,
                 general["default_provider"] = provider
                 logger.info(f"Default provider changed to: {provider}")
 
-        elif key == "o":
-            current_cmd = general.get("post_renewal_cmd", "")
+        elif key in ("o", "a"):
+            name = "post_renewal_cmd" if key == "o" else "notify_cmd"
+            current_cmd = general.get(name, "")
+            shown = current_cmd or "-"
+            prompt = t("Command after renewal, - clears it [Enter = {value}]: ", value=shown) if key == "o" \
+                else t("Failure notice command, gets the notice on stdin, - clears it [Enter = {value}]: ", value=shown)
             print()
-            cmd = ask(t("Command after renewal, - clears it [Enter = {value}]: ", value=current_cmd or "-"), current_cmd)
+            cmd = ask(prompt, current_cmd)
             cmd = "" if cmd == "-" else cmd
             try:
                 shlex.split(cmd)
             except ValueError as e:
-                fail(f"general.post_renewal_cmd cannot be parsed: {e}")
+                fail(f"general.{name} cannot be parsed: {e}")
                 continue
-            general["post_renewal_cmd"] = cmd
-            logger.info(f"post_renewal_cmd set to: {cmd or '(none)'}")
+            general[name] = cmd
+            logger.info(f"{name} set to: {cmd or '(none)'}")
 
         elif key == "l":
             general["logs"] = 0 if general.get("logs", 1) == 1 else 1
