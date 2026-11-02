@@ -308,6 +308,32 @@ def _failures(p: Painter, results: Sequence[Tuple[str, bool]], indent: str = "")
                        auto=p.fg("accent", "xcert --auto", bold=True))]
 
 
+def _mark(p: Painter, on: bool) -> str:
+    """Cursor marker for the row under the arrow keys; a space keeps the columns put."""
+    return p.fg("accent", "▸") if on else " "
+
+
+def _hint(p: Painter, back: bool = False) -> str:
+    return "  " + p.dim(t("↑↓ move   Enter select   q back") if back else t("↑↓ move   Enter select"))
+
+
+def _action_rows(p: Painter, items, sel: Optional[int] = None, first: int = 0) -> List[str]:
+    """One `key  label` row per item; `first` is the cursor index of the first row."""
+    return [f" {_mark(p, first + i == sel)}{p.fg('accent', key, bold=True)}   "
+            + (p.bold(label) if first + i == sel else label) for i, (key, label, _) in enumerate(items)]
+
+
+def _head(p: Painter, ctx: Context, sub: str) -> List[str]:
+    """Screen title in the current look; long titles (a domain name) are cut to leave room for the run time."""
+    sub = clip(sub, 28)
+    if p.theme == "ledger":
+        return _ledger_header(p, ctx, sub)
+    if p.theme == "timeline":
+        return [row(p.fg("accent", "xCert", bold=True) + "  " + p.dim(ctx.version) + "   " + p.bold(sub),
+                    p.dim(run_label(ctx)))]
+    return [_title(p, ctx, [], sub)]
+
+
 # ======================
 # LEDGER
 # ======================
@@ -345,11 +371,11 @@ def ledger_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -
     return "\n".join([_ledger_rule(p), row(left, p.dim(duration(elapsed)))] + _failures(p, results))
 
 
-def ledger_menu(p: Painter, ctx: Context, states, items) -> str:
+def ledger_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
     out = _ledger_header(p, ctx)
     out += ["  " + _counts_line(p, states, ctx), "  " + p.dim(run_label(ctx)), ""]
-    out += [f"  {p.fg('accent', key, bold=True)}   {label}" for key, label, _ in items]
-    return "\n".join(out + [""])
+    out += _action_rows(p, items, sel)
+    return "\n".join(out + ["", _hint(p)])
 
 
 def ledger_motd(p: Painter, ctx: Context, states) -> str:
@@ -468,14 +494,16 @@ def timeline_summary(p: Painter, ctx: Context, results, timings, elapsed: float)
     return "\n".join(out + _failures(p, results))
 
 
-def timeline_menu(p: Painter, ctx: Context, states, items) -> str:
+def timeline_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
     out = [row(p.fg("accent", "xCert", bold=True) + "  " + p.dim(ctx.version), p.dim(run_label(ctx))),
            _strip(p, states, ctx), ""]
-    half = (len(items) + 1) // 2
-    for left, right in zip(items[:half], items[half:] + [None] * (2 * half - len(items))):
-        cell = f"  {p.fg('accent', left[0], bold=True)} {left[1]}"
-        out.append(pad(cell, 40) + (f"{p.fg('accent', right[0], bold=True)} {right[1]}" if right else ""))
-    return "\n".join(out + [""])
+    # Two columns; left and right arrows jump between them (see nav_step).
+    cells = [f"{_mark(p, i == sel)} {p.fg('accent', key, bold=True)} {p.bold(label) if i == sel else label}"
+             for i, (key, label, _) in enumerate(items)]
+    half = (len(cells) + 1) // 2
+    for i in range(half):
+        out.append(pad(cells[i], 40) + (cells[i + half] if i + half < len(cells) else ""))
+    return "\n".join(out + ["", _hint(p)])
 
 
 def timeline_motd(p: Painter, ctx: Context, states) -> str:
@@ -524,9 +552,11 @@ def _meter(p: Painter, s: CertState, ctx: Context, inner: int) -> str:
             + painted_label + p.dim("]"))
 
 
-def _fkeys(p: Painter, items) -> str:
+def _fkeys(p: Painter, items, sel: Optional[int] = None) -> str:
     cw = WIDTH // len(items)
-    return "".join(p.fg("accent", key, bold=True) + p.chip("bar", pad(" " + short, cw - len(key))) for key, _, short in items)
+    return "".join(p.fg("accent", key, bold=True)
+                   + p.chip("bar", pad(("▸" if i == sel else " ") + short, cw - len(key)), accent=i == sel)
+                   for i, (key, _, short) in enumerate(items))
 
 
 def console_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
@@ -554,11 +584,12 @@ def console_summary(p: Painter, ctx: Context, results, timings, elapsed: float) 
     return "\n".join(lines + [_bar(p, segs)] + _failures(p, results, "  "))
 
 
-def console_menu(p: Painter, ctx: Context, states, items) -> str:
+def console_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
     out = [_title(p, ctx, states, "menu"), ""]
     out += [f"  {pad(clip(s.name, 25), 26)}{_meter(p, s, ctx, 42)}" for s in states]
     out += ["", "  " + p.dim(t("timer")) + "  " + (p.fg("ok", t("active")) + ", " + run_label(ctx) if ctx.next_run
-                                                   else p.fg("err", t("not active"))), "", _fkeys(p, items)]
+                                                   else p.fg("err", t("not active"))), "", _hint(p),
+            _fkeys(p, items, sel)]
     return "\n".join(out)
 
 
@@ -588,17 +619,26 @@ def render_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -
     return RENDERERS[p.theme]["summary"](p, ctx, results, timings, elapsed)
 
 
-def render_menu(p: Painter, ctx: Context, states, items) -> str:
+def render_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
     items = [(key, t(label), t(short)) for key, label, short in items]
-    return RENDERERS[p.theme]["menu"](p, ctx, states, items)
+    return RENDERERS[p.theme]["menu"](p, ctx, states, items, sel)
 
 
 def render_motd(p: Painter, ctx: Context, states) -> str:
     return RENDERERS[p.theme]["motd"](p, ctx, states)
 
 
+def render_head(p: Painter, ctx: Context, sub: str) -> str:
+    return "\n".join(_head(p, ctx, sub))
+
+
 def prompt(p: Painter) -> str:
     return p.fg("accent", t("choose ›") if p.theme == "console" else "›") + " "
+
+
+def nav_step(theme: str, count: int) -> int:
+    """How far left and right jump in the main menu: a whole column in the two-column timeline."""
+    return (count + 1) // 2 if theme == "timeline" else 1
 
 
 THEME_NAMES = {"ledger": "ledger", "timeline": "timeline", "console": "console"}
@@ -606,10 +646,11 @@ COLOR_NAMES = {"auto": "auto", "full": "full (24-bit)", "16": "16 colours", "non
 
 
 LANGUAGE_NAMES = {"en": "English", "pl": "polski"}  # each in its own language, so it is recognisable
+PICKER_ROWS = ("1", "2", "3", "c", "b", "l")  # cursor rows of the look picker, in screen order
 
 
 def render_picker(p: Painter, ctx: Context, appearance: Dict[str, str], effective_mode: str,
-                  language: str = "en") -> str:
+                  language: str = "en", sel: Optional[int] = None) -> str:
     """Look picker: each option is drawn with a sample of that look."""
     sample_state = CertState("example.pl", "ovh", present=True, days_left=79,
                              expires=ctx.now + timedelta(days=79))
@@ -619,23 +660,157 @@ def render_picker(p: Painter, ctx: Context, appearance: Dict[str, str], effectiv
                            for i in range(20)] + [("ok", "◆"), ("dim", "···")], p) + " 79 d",
         "console": _meter(p, sample_state, ctx, 30),
     }
-    out = [row(p.fg("accent", "xCert", bold=True) + "  " + p.bold(t("look")), p.dim(t("saved to config.json"))), ""]
-    for i, theme in enumerate(THEMES, 1):
+    out = _head(p, ctx, t("look")) + ["  " + p.dim(t("saved to config.json")), ""]
+    for i, theme in enumerate(THEMES):
         current = theme == appearance["theme"]
-        marker = p.fg("accent", "▸") if current else " "
-        out.append(f"  {marker} {p.fg('accent', str(i), bold=True)}  {pad(THEME_NAMES[theme], 10)} {samples[theme]}")
+        name = p.bold(pad(THEME_NAMES[theme], 10)) if current else pad(THEME_NAMES[theme], 10)
+        out.append(f" {_mark(p, i == sel)}{p.fg('accent', str(i + 1), bold=True)}  "
+                   f"{p.fg('accent', '✓') if current else ' '} {name} {samples[theme]}")
     note = "" if appearance["colors"] == effective_mode else p.dim(
         "  " + t("(now {mode})", mode=t(COLOR_NAMES[effective_mode])))
-    keys = [("1-3", t("look")), ("c", t("colours")), ("b", t("background")), ("l", t("language")),
-            ("s", t("save")), ("q", t("back"))]
+    settings = (("c", t("colours"), t(COLOR_NAMES[appearance["colors"]]), note),
+                ("b", t("background"), t(appearance["background"]), ""),
+                ("l", t("language"), LANGUAGE_NAMES[language], ""))
+    out.append("")
+    for i, (key, label, value, extra) in enumerate(settings, 3):
+        out.append(f" {_mark(p, i == sel)}{p.fg('accent', key, bold=True)}  {pad(label, 13)}{p.bold(value)}{extra}")
+    keys = [("↑↓", t("move")), ("←→", t("change")), ("Enter", t("save")), ("q", t("back"))]
     out += ["",
-            f"  {p.fg('accent', 'c', bold=True)}  {pad(t('colours'), 13)}"
-            f"{p.bold(t(COLOR_NAMES[appearance['colors']]))}{note}",
-            f"  {p.fg('accent', 'b', bold=True)}  {pad(t('background'), 13)}{p.bold(t(appearance['background']))}",
-            f"  {p.fg('accent', 'l', bold=True)}  {pad(t('language'), 13)}{p.bold(LANGUAGE_NAMES[language])}",
-            "",
             p.dim("  " + t("one-off for a single command:") + " xcert --theme console --colors 16 --list"),
             p.dim("  " + t("NO_COLOR, journald and cron always get plain text")),
             "",
             "  " + "   ".join(f"{p.fg('accent', k, bold=True)} {label}" for k, label in keys)]
     return "\n".join(out)
+
+
+def render_editor(p: Painter, ctx: Context, config: Dict, path: str, sel: int, items, domain_items) -> str:
+    """Configuration editor: domain rows first, then the editor's own actions, one cursor over both."""
+    general = config.get("general", {})
+    domains = config.get("domains", [])
+    default = general.get("default_provider") or t("none")
+    logs = p.fg("ok", t("enabled")) if general.get("logs", 1) == 1 else p.fg("err", t("disabled"))
+    out = _head(p, ctx, t("configuration"))
+    out += ["  " + p.dim(t("default provider")) + " " + p.bold(clip(default, 20)) + "   " + p.dim(t("logs")) + " " + logs,
+            "  " + p.dim(t("after renewal")) + " " + clip(general.get("post_renewal_cmd") or t("none"), INNER - 20),
+            "  " + p.dim(t("file") + " " + clip(path, INNER - 8)), ""]
+    sep = p.dim("│") if p.theme == "timeline" else " "
+    if p.theme == "console":
+        out.append(p.chip("bar", pad("    " + pad(t("no."), 4) + pad(t("domain"), 28) + pad(t("provider"), 14)
+                                     + t("email"), WIDTH)))
+    for i, d in enumerate(domains):
+        on = i == sel
+        name = pad(clip(d.get("domain", ""), 27), 28)
+        out.append(f" {_mark(p, on)}{p.fg('accent', rpad(str(i + 1), 2))}{sep} " + (p.bold(name) if on else name)
+                   + p.dim(pad(clip(d.get("provider") or default, 13), 14)) + p.dim(clip(d.get("email", ""), 30)))
+    if not domains:
+        out.append("  " + p.dim(t("No domains configured.")))
+    hint = "  " + p.dim(t("on a domain:")) + "  " + "   ".join(
+        f"{p.fg('accent', key, bold=True)} {t(short)}" for key, _, short in [("Enter", "", "more")] + list(domain_items))
+    if p.theme == "console":
+        items = [(key, t(label), t(short)) for key, label, short in items]
+        return "\n".join(out + ["", hint, _hint(p), _fkeys(p, items, sel - len(domains))])
+    items = [(key, t(label), short) for key, label, short in items]
+    return "\n".join(out + [""] + _action_rows(p, items, sel, len(domains)) + ["", hint, _hint(p)])
+
+
+def render_choice(p: Painter, ctx: Context, title: str, options: Sequence[str], sel: int,
+                  current: Optional[str] = None) -> str:
+    """Short pick list (providers, actions on a domain) in the current look."""
+    out = _head(p, ctx, title) + [""]
+    for i, option in enumerate(options):
+        on = i == sel
+        text = clip(option, 50)
+        out.append(f" {_mark(p, on)}{p.fg('accent', rpad(str(i + 1), 2), bold=True)}  " + (p.bold(text) if on else text)
+                   + (p.dim("  " + t("(current)")) if option == current else ""))
+    return "\n".join(out + ["", _hint(p, back=True)])
+
+
+def render_report(p: Painter, ctx: Context, states: Sequence[CertState], path: str) -> str:
+    """Confirmation after the validity report is written, with what is closest to expiring."""
+    known = [s for s in states if s.days_left is not None and s.days_left >= 0]
+    nearest = min(known, key=lambda s: s.days_left, default=None)
+    bad = [s for s in states if category(s, ctx.threshold) in ("expired", "missing", "unreadable")]
+    saved = t("report saved")
+    lines = []
+    if nearest:
+        lines.append("  " + t("closest to expiry: {name}, {status}", name=nearest.name,
+                              status=p.fg(level(nearest, ctx.threshold), status_text(nearest))))
+    if bad:
+        items = [(t(category(s, 10 ** 6)) + " " + s.name, p.fg("err", t(category(s, 10 ** 6))) + " " + s.name)
+                 for s in bad]
+        lines += ["  " + line for line in wrap_join(items, INNER - 2, 2)]
+    if p.theme == "console":
+        segs: List[Optional[Tuple[str, str, bool]]] = [(lvl, f" {n} {t(label)} ", False)
+                                                        for n, label, lvl in counts(states, ctx.threshold)]
+        head = " " + _tag(p, "ok", t("  OK  ")) + " " + saved + ": " + clip(path, INNER - len(saved) - 12)
+        return "\n".join([head, _bar(p, segs + [None])] + lines)
+    head = p.fg("ok", "✓") + " " + saved + "  " + p.dim(clip(path, INNER - len(saved) - 4))
+    return "\n".join(([_strip(p, states, ctx)] if p.theme == "timeline" else []) + [head] + lines)
+
+
+# ======================
+# KEYBOARD AND SCREEN
+# ======================
+KEY_NAMES = {b"\x1b[A": "up", b"\x1b[B": "down", b"\x1b[C": "right", b"\x1b[D": "left",
+             b"\x1bOA": "up", b"\x1bOB": "down", b"\x1bOC": "right", b"\x1bOD": "left",
+             b"\x1b": "esc", b"\r": "enter", b"\n": "enter", b"\x04": "q", b"": "q"}
+
+
+def decode_key(data: bytes) -> str:
+    """Raw bytes of one key press to a name ('up', 'enter', 'esc') or the lowercased character."""
+    if data == b"\x03":
+        raise KeyboardInterrupt
+    if data in KEY_NAMES:
+        return KEY_NAMES[data]
+    if data.startswith(b"\x1b"):
+        return KEY_NAMES.get(data[:3], "")  # other escape sequences (F-keys, Ctrl+arrow) do nothing
+    return data.decode("utf-8", "ignore").lower()
+
+
+def interactive() -> bool:
+    """Single keys and in-place redraw need a real terminal with termios (Linux, macOS)."""
+    try:
+        import termios  # noqa: F401
+    except ImportError:
+        return False
+    return sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
+
+
+def read_key(prompt_text: str = "") -> str:
+    """One key press, no Enter needed. Off a terminal (pipes, tests) it reads a whole line instead."""
+    if not interactive():
+        return input(prompt_text).strip().lower() or "enter"
+    import select
+    import termios
+    import tty
+    sys.stdout.write(prompt_text)
+    sys.stdout.flush()
+    fd = sys.stdin.fileno()
+    saved = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        data = os.read(fd, 1)
+        # Arrows arrive as ESC [ A in one burst, a lone Esc has nothing behind it; UTF-8 letters span bytes.
+        if data == b"\x1b" or (data and data[0] >= 0xC0):
+            while select.select([fd], [], [], 0.03)[0]:
+                data += os.read(fd, 8)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+    return decode_key(data)
+
+
+def draw(text: str) -> None:
+    """Redraws the screen in place on a terminal, so menus do not pile up; appends below otherwise."""
+    print(("\033[H\033[J" if interactive() else "\n") + text)
+
+
+def pause(p: Painter) -> None:
+    """Keeps a result on screen until a key is pressed, before the menu redraws over it."""
+    if interactive():
+        read_key("\n" + p.dim(t("press any key to go back")))
+
+
+def move(key: str, index: int, count: int, step: int = 1) -> int:
+    """Cursor after an arrow key; wraps around, any other key leaves it put."""
+    delta = {"up": -1, "down": 1, "left": -step, "right": step}.get(key)
+    return index if delta is None or not count else (index + delta) % count

@@ -43,25 +43,6 @@ RATE_LIMIT_SIGNATURES: Dict[str, List[str]] = {
 }
 
 # ======================
-# CONSOLE COLORS
-# ======================
-class Colors:
-    RESET = "\033[0m"
-    BOLD = "\033[1m"
-    RED = "\033[31m"
-    GREEN = "\033[32m"
-    YELLOW = "\033[33m"
-    BLUE = "\033[34m"
-    MAGENTA = "\033[35m"
-    CYAN = "\033[36m"
-    WHITE = "\033[37m"
-    BRIGHT_GREEN = "\033[92m"
-    BRIGHT_RED = "\033[91m"
-    BRIGHT_YELLOW = "\033[93m"
-
-COLOR_CODES = {name: code for name, code in vars(Colors).items() if name.isupper()}
-
-# ======================
 # PATH RESOLUTION
 # ======================
 def resolve_project_path(path: Optional[str]) -> Optional[str]:
@@ -752,33 +733,45 @@ def effective_appearance(config: Dict, args: Optional[argparse.Namespace] = None
 
 def make_painter(appearance: Dict[str, str], assume_terminal: bool = False) -> ui.Painter:
     mode = ui.resolve_color_mode(appearance["colors"], assume_terminal=assume_terminal)
-    # Legacy screens (editor, prompts) print Colors directly; blank them for plain output
-    # and bring them back when the look switches to a colour mode again.
-    for name, code in COLOR_CODES.items():
-        setattr(Colors, name, "" if mode == "none" else code)
     return ui.Painter(appearance["theme"], mode, appearance["background"])
 
 
 def pick_appearance(config_path: str, appearance: Dict[str, str], logger: logging.Logger) -> None:
-    """Interactive look and language picker; saves to config.json on 's' and updates `appearance` in place."""
+    """Interactive look and language picker; saves to config.json on Enter or 's', updates `appearance` in place."""
     draft = dict(appearance)
     original_language = language = i18n.current_language()
     ctx = build_ui_context({})
+    sel = ui.THEMES.index(draft["theme"])
+
+    def cycle(values, value, step):
+        return values[(values.index(value) + step) % len(values)]
+
     while True:
         painter = make_painter(draft)
-        print()
-        print(ui.render_picker(painter, ctx, draft, painter.mode, language))
-        choice = input(ui.prompt(painter)).strip().lower()
-        if choice in ("1", "2", "3"):
-            draft["theme"] = ui.THEMES[int(choice) - 1]
-        elif choice == "c":
-            draft["colors"] = ui.COLOR_MODES[(ui.COLOR_MODES.index(draft["colors"]) + 1) % len(ui.COLOR_MODES)]
-        elif choice == "b":
-            draft["background"] = "light" if draft["background"] == "dark" else "dark"
-        elif choice == "l":
-            language = i18n.LANGUAGES[(i18n.LANGUAGES.index(language) + 1) % len(i18n.LANGUAGES)]
+        ui.draw(ui.render_picker(painter, ctx, draft, painter.mode, language, sel))
+        key = ui.read_key(ui.prompt(painter))
+        step = -1 if key == "left" else 1
+        if key in ("up", "down") or (key in ("left", "right") and sel < len(ui.THEMES)):
+            # Up and down walk all rows; on the look rows left and right walk the looks.
+            count = len(ui.PICKER_ROWS) if key in ("up", "down") else len(ui.THEMES)
+            sel = ui.move(key, sel, count)
+            if sel < len(ui.THEMES):
+                draft["theme"] = ui.THEMES[sel]  # live preview
+            continue
+        if key in ("left", "right"):
+            key = ui.PICKER_ROWS[sel]
+        elif key in ui.PICKER_ROWS:
+            sel = ui.PICKER_ROWS.index(key)
+        if key in ("1", "2", "3"):
+            draft["theme"] = ui.THEMES[int(key) - 1]
+        elif key == "c":
+            draft["colors"] = cycle(ui.COLOR_MODES, draft["colors"], step)
+        elif key == "b":
+            draft["background"] = cycle(ui.BACKGROUNDS, draft["background"], step)
+        elif key == "l":
+            language = cycle(i18n.LANGUAGES, language, step)
             i18n.set_language(language)  # preview right away
-        elif choice == "s":
+        elif key in ("s", "enter"):
             try:
                 raw = load_config(config_path=config_path)
                 raw["appearance"] = draft
@@ -787,198 +780,210 @@ def pick_appearance(config_path: str, appearance: Dict[str, str], logger: loggin
             except Exception as e:
                 logger.error(f"Could not save appearance: {e}")
                 i18n.set_language(original_language)
+                ui.pause(painter)
                 return
             appearance.update(draft)
             logger.info(f"Look saved: {draft['theme']}, colours {draft['colors']}, background {draft['background']}, "
                         f"language {language}")
             return
-        elif choice in ("q", ""):
+        elif key in ("q", "esc"):
             i18n.set_language(original_language)
             return
+
+
+def choose(painter: ui.Painter, ctx: ui.Context, title: str, options: List[str],
+           current: Optional[str] = None) -> Optional[int]:
+    """Arrow-key pick list; returns the index of the chosen option, or None on q / Esc."""
+    if not options:
+        return None
+    sel = options.index(current) if current in options else 0
+    while True:
+        ui.draw(ui.render_choice(painter, ctx, title, options, sel, current))
+        key = ui.read_key(ui.prompt(painter))
+        if key == "enter":
+            return sel
+        if key in ("q", "esc"):
+            return None
+        if key.isdigit() and 1 <= int(key) <= len(options):
+            return int(key) - 1
+        if key in options:  # a name typed off a terminal
+            return options.index(key)
+        sel = ui.move(key, sel, len(options))
+
+
+def ask(label: str, default: str = "") -> str:
+    """Free-text field (domain, email, command); Enter keeps the default."""
+    return input("  " + label).strip() or default
+
+
+def confirm(painter: ui.Painter, question: str) -> bool:
+    return ui.read_key("\n  " + painter.fg("warn", question)) in ("y", "t")
 
 # ======================
 # CONFIGURATION EDITOR
 # ======================
-def edit_config_interactive(config_path: str, logger: logging.Logger) -> None:
-    """Interactive terminal editor for config.json."""
+EDITOR_ITEMS = [
+    ("n", "add domain", "Add"),
+    ("d", "default provider", "Default"),
+    ("o", "command after renewal", "Command"),
+    ("l", "toggle logs", "Logs"),
+    ("v", "check configuration", "Check"),
+    ("s", "save and exit", "Save"),
+    ("q", "quit without saving", "Cancel"),
+]
+# Keys that act on the domain under the cursor; Enter on a domain lists them.
+DOMAIN_ITEMS = [
+    ("z", "change domain or email", "Edit"),
+    ("p", "change provider", "Provider"),
+    ("u", "remove domain", "Remove"),
+]
+
+
+def edit_config_interactive(config_path: str, logger: logging.Logger,
+                            appearance: Optional[Dict[str, str]] = None) -> None:
+    """Interactive editor for config.json, drawn in the configured look and driven by arrow keys."""
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-
-        general = config.setdefault("general", {})
-        domains = config.setdefault("domains", [])
-
-        default_prov = general.get("default_provider")
-        if not default_prov:
-            print("\n⚠️ " + t("Warning: No default provider set in configuration."))
-            available = ", ".join(config.get("providers", {}).keys()) or t("none")
-            print(t("Available providers: {names}", names=available))
-            default_prov = input(t("Enter default provider: ")).strip()
-            if default_prov:
-                general["default_provider"] = default_prov
-            else:
-                logger.error("No default provider set. Aborting edit.")
-                return
-
-        while True:
-            print(f"\n{Colors.BOLD}{Colors.YELLOW}" + "=" * 60 + Colors.RESET)
-            print(f"{Colors.BOLD}{Colors.YELLOW}🔧 {t('EDIT xCert CONFIGURATION')}{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.YELLOW}" + "=" * 60 + Colors.RESET)
-            print(f"{Colors.CYAN}🔧 {t('Default provider:')} {Colors.BRIGHT_GREEN}{default_prov}{Colors.RESET}")
-            print(
-                f"{Colors.CYAN}📝 {t('Logging:')} "
-                f"{Colors.BRIGHT_GREEN if general.get('logs', 1) == 1 else Colors.BRIGHT_RED}"
-                f"{t('Enabled') if general.get('logs', 1) == 1 else t('Disabled')}{Colors.RESET}"
-            )
-
-            if domains:
-                print(f"\n{Colors.CYAN}🌐 {t('Configured domains ({n}):', n=len(domains))}{Colors.RESET}")
-                max_dom_len = max(len(d["domain"]) for d in domains)
-                max_email_len = max(len(d["email"]) for d in domains)
-                for i, d in enumerate(domains, 1):
-                    prov = d.get("provider", default_prov)
-                    dom_part = d["domain"].ljust(max_dom_len)
-                    email_part = d["email"].ljust(max_email_len)
-                    print(
-                        f"  {i}. {Colors.GREEN}{dom_part}{Colors.RESET} | "
-                        f"{t('email:')} {Colors.BLUE}{email_part}{Colors.RESET} | "
-                        f"{t('provider:')} {Colors.MAGENTA}{prov}{Colors.RESET}"
-                    )
-            else:
-                print(f"\n{Colors.YELLOW}🌐 {t('No domains configured.')}{Colors.RESET}")
-
-            print(f"\n{Colors.BOLD}{t('What would you like to do?')}{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.GREEN}1. ➕ {t('Add domain')}{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.RED}2. 🗑️  {t('Remove domain')}{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.BLUE}3. ✏️  {t('Edit domain / email')}{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.MAGENTA}4. 🔁 {t('Change domain provider')}{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.YELLOW}5. ⚙️  {t('Change default provider')}{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.CYAN}6. 📝 {t('Toggle logging')}{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.CYAN}7. 🧪 {t('Validate config')}{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.GREEN}8. 💾 {t('Save and exit')}{Colors.RESET}")
-            print(f"{Colors.BOLD}{Colors.RED}9. ❌ {t('Cancel')}{Colors.RESET}")
-
-            choice = input(f"\n{Colors.BOLD}{t('Choose option (1-9): ')}{Colors.RESET}").strip()
-
-            if choice == "1":
-                domain = input("  " + t("Domain: ")).strip()
-                email = input("  " + t("Email: ")).strip()
-                use_default = input("  " + t("Use default provider ({name})? (Y/n): ", name=default_prov)).strip().lower()
-                if use_default in ("n", "no", "nie"):
-                    prov_list = ", ".join(config.get("providers", {}).keys())
-                    provider = input("  " + t("Provider (available: {names}): ", names=prov_list)).strip()
-                    if not provider or provider not in config.get("providers", {}):
-                        logger.error("Invalid provider. Operation cancelled.")
-                        continue
-                else:
-                    provider = default_prov
-
-                if not domain or not email:
-                    logger.error("Domain and email are required.")
-                    continue
-                if not is_valid_email(email):
-                    logger.error(f"Invalid email: {email}")
-                    continue
-                if not is_valid_domain(domain):
-                    logger.error(f"Invalid domain: {domain}")
-                    continue
-
-                domains.append({"domain": domain, "email": email, "provider": provider})
-                logger.info(f"Added: {domain} (provider: {provider})")
-
-            elif choice == "2":
-                if not domains:
-                    print("  " + t("No domains to remove."))
-                    continue
-                try:
-                    idx = int(input("  " + t("Domain number to remove: "))) - 1
-                    if 0 <= idx < len(domains):
-                        removed = domains.pop(idx)
-                        logger.info(f"Removed: {removed['domain']}")
-                    else:
-                        print("  " + t("Invalid number."))
-                except ValueError:
-                    print("  " + t("Please enter a number."))
-
-            elif choice == "3":
-                if not domains:
-                    print("  " + t("No domains to edit."))
-                    continue
-                try:
-                    idx = int(input("  " + t("Domain number to edit: "))) - 1
-                    if not (0 <= idx < len(domains)):
-                        print("  " + t("Invalid number."))
-                        continue
-                    current = domains[idx]
-                    new_domain = input("  " + t("New domain [Enter = {value}]: ", value=current["domain"])).strip() \
-                        or current["domain"]
-                    new_email = input("  " + t("New email  [Enter = {value}]: ", value=current["email"])).strip() \
-                        or current["email"]
-                    if not is_valid_domain(new_domain):
-                        logger.error(f"Invalid domain: {new_domain}")
-                        continue
-                    if not is_valid_email(new_email):
-                        logger.error(f"Invalid email: {new_email}")
-                        continue
-                    current["domain"] = new_domain
-                    current["email"] = new_email
-                    logger.info(f"Updated entry #{idx + 1}: {new_domain}")
-                except ValueError:
-                    print("  " + t("Please enter a number."))
-
-            elif choice == "4":
-                if not domains:
-                    print("  " + t("No domains to edit."))
-                    continue
-                try:
-                    idx = int(input("  " + t("Domain number to change provider: "))) - 1
-                    if not (0 <= idx < len(domains)):
-                        print("  " + t("Invalid number."))
-                        continue
-                    prov_list = ", ".join(config.get("providers", {}).keys())
-                    new_provider = input("  " + t("New provider (available: {names}): ", names=prov_list)).strip()
-                    if not new_provider or new_provider not in config.get("providers", {}):
-                        logger.error("Invalid provider.")
-                        continue
-                    domains[idx]["provider"] = new_provider
-                    logger.info(f"Changed provider for {domains[idx]['domain']} to {new_provider}")
-                except ValueError:
-                    print("  " + t("Please enter a number."))
-
-            elif choice == "5":
-                prov_list = ", ".join(config.get("providers", {}).keys())
-                new_provider = input("  " + t("New default provider (available: {names}): ", names=prov_list)).strip()
-                if new_provider and new_provider in config.get("providers", {}):
-                    general["default_provider"] = new_provider
-                    default_prov = new_provider
-                    logger.info(f"Default provider changed to: {new_provider}")
-                else:
-                    logger.error("Invalid provider.")
-
-            elif choice == "6":
-                current_val = general.get("logs", 1)
-                general["logs"] = 0 if current_val == 1 else 1
-                state = "enabled" if general["logs"] == 1 else "disabled"
-                logger.info(f"Logging {state}.")
-
-            elif choice == "7":
-                selected = prompt_domain_filters(config, logger)
-                validate_config(config, logger, selected or None)
-
-            elif choice == "8":
-                save_config(config, config_path=config_path)
-                logger.info(f"{Colors.BRIGHT_GREEN}✅ Configuration saved.{Colors.RESET}")
-                break
-
-            elif choice == "9":
-                print(f"{Colors.BRIGHT_RED}❌ {t('Cancelled, configuration unchanged.')}{Colors.RESET}")
-                break
-
-            else:
-                print("⚠️ " + t("Invalid choice."))
-
+        config = load_config(config_path=config_path)
     except Exception as e:
-        logger.error(f"{Colors.BRIGHT_RED}❌ Error during configuration edit: {e}{Colors.RESET}")
+        logger.error(f"Could not load configuration: {e}")
+        return
+    general = config.setdefault("general", {})
+    domains = config.setdefault("domains", [])
+    providers = list(config.get("providers", {}))
+    painter = make_painter(appearance or effective_appearance(config))
+    ctx = build_ui_context(config)
+    unchanged = json.dumps(config, sort_keys=True)
+
+    def fail(message: str) -> None:
+        logger.error(message)
+        ui.pause(painter)
+
+    def pick_provider(title: str, current: Optional[str]) -> Optional[str]:
+        i = choose(painter, ctx, title, providers, current)
+        return None if i is None else providers[i]
+
+    if not general.get("default_provider"):
+        chosen = pick_provider(t("default provider"), None)
+        if not chosen:
+            logger.error("No default provider set. Aborting edit.")
+            return
+        general["default_provider"] = chosen
+
+    sel = 0
+    while True:
+        sel = min(sel, len(domains) + len(EDITOR_ITEMS) - 1)
+        ui.draw(ui.render_editor(painter, ctx, config, config_path, sel, EDITOR_ITEMS, DOMAIN_ITEMS))
+        key = ui.read_key(ui.prompt(painter))
+        on_domain = sel < len(domains)
+        if key.isdigit():  # jump to a domain by its number
+            if 1 <= int(key) <= len(domains):
+                sel = int(key) - 1
+            continue
+        if key == "enter":
+            if on_domain:
+                i = choose(painter, ctx, domains[sel].get("domain", ""), [t(label) for _, label, _ in DOMAIN_ITEMS])
+                if i is None:
+                    continue
+                key = DOMAIN_ITEMS[i][0]
+            else:
+                key = EDITOR_ITEMS[sel - len(domains)][0]
+        elif key in [k for k, _, _ in EDITOR_ITEMS]:
+            sel = len(domains) + [k for k, _, _ in EDITOR_ITEMS].index(key)
+        if key in [k for k, _, _ in DOMAIN_ITEMS] and not on_domain:
+            fail("Select a domain first (arrow keys or its number).")
+            continue
+        default_prov = general["default_provider"]
+
+        if key == "n":
+            print()
+            domain = ask(t("Domain: "))
+            last_email = domains[-1].get("email", "") if domains else ""
+            email = ask(t("Email [Enter = {value}]: ", value=last_email), last_email) if last_email else ask(t("Email: "))
+            if not is_valid_domain(domain):
+                fail(f"Invalid domain: {domain}")
+                continue
+            if not is_valid_email(email):
+                fail(f"Invalid email: {email}")
+                continue
+            provider = pick_provider(t("provider for {domain}", domain=domain), default_prov)
+            if provider is None:
+                continue
+            domains.append({"domain": domain, "email": email, "provider": provider})
+            sel = len(domains) - 1
+            logger.info(f"Added: {domain} (provider: {provider})")
+
+        elif key == "z":
+            current = domains[sel]
+            print()
+            new_domain = ask(t("New domain [Enter = {value}]: ", value=current.get("domain", "")), current.get("domain", ""))
+            new_email = ask(t("New email  [Enter = {value}]: ", value=current.get("email", "")), current.get("email", ""))
+            if not is_valid_domain(new_domain):
+                fail(f"Invalid domain: {new_domain}")
+                continue
+            if not is_valid_email(new_email):
+                fail(f"Invalid email: {new_email}")
+                continue
+            current["domain"], current["email"] = new_domain, new_email
+            logger.info(f"Updated entry #{sel + 1}: {new_domain}")
+
+        elif key == "p":
+            current = domains[sel]
+            provider = pick_provider(t("provider for {domain}", domain=current.get("domain", "")),
+                                     current.get("provider", default_prov))
+            if provider:
+                current["provider"] = provider
+                logger.info(f"Changed provider for {current.get('domain')} to {provider}")
+
+        elif key == "u":
+            if confirm(painter, t("Remove {domain}? (y/N) ", domain=domains[sel].get("domain", ""))):
+                removed = domains.pop(sel)
+                logger.info(f"Removed: {removed.get('domain')}")
+
+        elif key == "d":
+            provider = pick_provider(t("default provider"), default_prov)
+            if provider:
+                general["default_provider"] = provider
+                logger.info(f"Default provider changed to: {provider}")
+
+        elif key == "o":
+            current_cmd = general.get("post_renewal_cmd", "")
+            print()
+            cmd = ask(t("Command after renewal, - clears it [Enter = {value}]: ", value=current_cmd or "-"), current_cmd)
+            cmd = "" if cmd == "-" else cmd
+            try:
+                shlex.split(cmd)
+            except ValueError as e:
+                fail(f"general.post_renewal_cmd cannot be parsed: {e}")
+                continue
+            general["post_renewal_cmd"] = cmd
+            logger.info(f"post_renewal_cmd set to: {cmd or '(none)'}")
+
+        elif key == "l":
+            general["logs"] = 0 if general.get("logs", 1) == 1 else 1
+            logger.info(f"Logging {'enabled' if general['logs'] == 1 else 'disabled'}.")
+
+        elif key == "v":
+            ui.draw(ui.render_head(painter, ctx, t("checking")))
+            validate_config(config, logger)
+            ui.pause(painter)
+
+        elif key == "s":
+            try:
+                save_config(config, config_path=config_path)
+            except Exception as e:
+                fail(f"Could not save configuration: {e}")
+                continue
+            logger.info("Configuration saved.")
+            return
+
+        elif key in ("q", "esc"):
+            if json.dumps(config, sort_keys=True) != unchanged and not confirm(painter, t("Discard changes? (y/N) ")):
+                continue
+            print(t("Cancelled, configuration unchanged."))
+            return
+
+        else:
+            sel = ui.move(key, sel, len(domains) + len(EDITOR_ITEMS))
 
 # ======================
 # INTERACTIVE MENU
@@ -999,49 +1004,68 @@ MENU_ALIASES = {"1": "o", "2": "w", "3": "r", "4": "l", "5": "e", "6": "s", "7":
 
 def interactive_menu(config: Dict, logger: logging.Logger, config_path: str,
                      appearance: Optional[Dict[str, str]] = None) -> None:
-    """Text-based interactive CLI menu drawn in the configured look."""
+    """Main menu drawn in the configured look: arrows and Enter, or the item's letter."""
     appearance = appearance or effective_appearance(config)
+    keys = [key for key, _, _ in MENU_ITEMS]
+    sel = keys.index("l")  # a stray Enter lists certificates instead of renewing them
     while True:
         painter = make_painter(appearance)
-        print()
-        print(ui.render_menu(painter, build_ui_context(config), collect_cert_states(config), MENU_ITEMS))
-        choice = input(ui.prompt(painter)).strip().lower()
-        choice = MENU_ALIASES.get(choice, choice)
+        ctx = build_ui_context(config)
+        ui.draw(ui.render_menu(painter, ctx, collect_cert_states(config), MENU_ITEMS, sel))
+        key = ui.read_key(ui.prompt(painter))
+        key = MENU_ALIASES.get(key, key)
+        if key in ("up", "down", "left", "right"):
+            sel = ui.move(key, sel, len(keys), ui.nav_step(painter.theme, len(keys)))
+            continue
+        key = {"enter": keys[sel], "esc": "q"}.get(key, key)
+        if key not in keys:
+            logger.warning(f"Unknown key '{key}'.")
+            continue
+        sel = keys.index(key)
 
-        if choice == "o":
+        if key == "o":
+            ui.draw(ui.render_head(painter, ctx, t("renewal")))
             cert_auto(config, logger, painter=painter)
-        elif choice == "w":
-            domain = input(t("Domain: ")).strip()
-            email = input(t("Email: ")).strip()
-            provider = input(t("Provider (e.g. ovh, cloudflare) [Enter = default]: ")).strip() or None
+        elif key == "w":
+            ui.draw(ui.render_head(painter, ctx, t("issue")))
+            domain = ask(t("Domain: "))
+            email = ask(t("Email: "))
             if not domain or not email:
                 logger.error("Domain and email are required.")
+                ui.pause(painter)
                 continue
-            domain_entry: Dict = {"domain": domain, "email": email}
-            if provider:
-                domain_entry["provider"] = provider
-            cert_for_domain(domain_entry, config["general"], config["providers"], logger)
-        elif choice == "r":
-            generate_cert_report(config, logger)
-        elif choice == "l":
-            print()
-            print(ui.render_list(painter, build_ui_context(config), collect_cert_states(config)))
-        elif choice == "e":
-            edit_config_interactive(config_path, logger)
+            providers = list(config.get("providers", {}))
+            i = choose(painter, ctx, t("provider for {domain}", domain=domain), providers,
+                       config["general"].get("default_provider"))
+            if i is None:
+                continue
+            ui.draw(ui.render_head(painter, ctx, t("issue")))
+            cert_for_domain({"domain": domain, "email": email, "provider": providers[i]},
+                            config["general"], config["providers"], logger)
+        elif key == "r":
+            path = generate_cert_report(config, logger)
+            ui.draw(ui.render_report(painter, ctx, collect_cert_states(config), path))
+        elif key == "l":
+            ui.draw(ui.render_list(painter, ctx, collect_cert_states(config)))
+        elif key == "e":
+            edit_config_interactive(config_path, logger, appearance)
             try:
                 config = load_config(config_path=config_path)
                 logger.info("Configuration reloaded.")
             except Exception as e:
                 logger.error(f"Failed to reload configuration: {e}")
-        elif choice == "s":
+                ui.pause(painter)
+            continue
+        elif key == "s":
+            ui.draw(ui.render_head(painter, ctx, t("checking")))
             selected = prompt_domain_filters(config, logger)
             validate_config(config, logger, selected or None)
-        elif choice == "t":
+        elif key == "t":
             pick_appearance(config_path, appearance, logger)
-        elif choice == "q":
+            continue
+        elif key == "q":
             break
-        else:
-            logger.warning(f"Unknown key '{choice}'.")
+        ui.pause(painter)
 
 # ======================
 # MAIN
@@ -1131,11 +1155,13 @@ def main() -> None:
         return
 
     if args.edit_config:
-        edit_config_interactive(config_path, logger)
+        edit_config_interactive(config_path, logger, appearance)
         return
 
     if args.report:
-        generate_cert_report(config, logger)
+        path = generate_cert_report(config, logger)
+        if sys.stdout.isatty():  # cron and timers only need the log line
+            print(ui.render_report(make_painter(appearance), build_ui_context(config), collect_cert_states(config), path))
         return
 
     if args.list:
