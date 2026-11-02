@@ -224,6 +224,11 @@ PL = {
     "status": "status",
     "install": "instalacja",
     "uninstall": "deinstalacja",
+    "update": "aktualizacja",
+    "already up to date": "już aktualne",
+    "certbot update": "aktualizacja certbota",
+    "git pull, upgrade certbot and its plugins, then what --install does (root)":
+        "git pull, aktualizacja certbota i wtyczek, potem to co --install (root)",
     "DNS plugins": "wtyczki DNS",
     "none needed": "żadne niepotrzebne",
     "system packages": "pakiety systemowe",

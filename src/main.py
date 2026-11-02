@@ -920,7 +920,8 @@ def run_step(cmd: List[str], logger: logging.Logger, timeout: int = 900) -> bool
     rc, out, err = run_command(cmd, timeout=timeout)
     if rc != 0:
         last = ((err or out).strip().splitlines() or [""])[-1]
-        logger.error(f"{' '.join(cmd)} failed (rc={rc}): {last}")
+        # The reason goes first: screen rows cut long details, and the command is in the debug log anyway.
+        logger.error(f"{last or 'failed'} (rc={rc}: {' '.join(cmd)})")
     return rc == 0
 
 
@@ -1110,8 +1111,67 @@ def system_status(config: Dict, logger: logging.Logger, checks: List[Tuple[str, 
         return not any(r.levelno >= logging.ERROR for r in rec.records)
 
 
+UPDATED_FROM_ENV = "XCERT_UPDATED_FROM"  # set before --update restarts itself with the pulled code
+
+
+def pull(logger: logging.Logger, section) -> None:
+    """git pull --ff-only; when the checkout moved, restarts --update with the new code (os.execv)."""
+    previous = os.environ.pop(UPDATED_FROM_ENV, None)
+    if previous:
+        section("git pull", f"{previous} -> {VERSION}")
+        return
+    git = ["git", "-C", XCERT_ROOT, "-c", f"safe.directory={XCERT_ROOT}"]
+    rc, before, _ = run_command(git + ["rev-parse", "--short", "HEAD"], timeout=30)
+    if rc != 0:
+        logger.error(f"{XCERT_ROOT} is not a git checkout, update it by hand")
+    elif run_step(git + ["pull", "--ff-only"], logger, 300):
+        after = run_command(git + ["rev-parse", "--short", "HEAD"], timeout=30)[1]
+        if after.strip() != before.strip():
+            logger.info(f"Pulled {before.strip()}..{after.strip()}, restarting with the new code")
+            os.environ[UPDATED_FROM_ENV] = f"{VERSION} ({before.strip()})"
+            sys.stdout.flush()
+            os.execv(sys.executable, [sys.executable, os.path.join(SCRIPT_DIR, "main.py"), *sys.argv[1:]])
+    section("git pull", t("already up to date"))
+
+
+def upgrade_certbot(logger: logging.Logger, section) -> None:
+    """Newest certbot and every certbot plugin already installed, the same way certbot was installed."""
+    certbot = shutil.which("certbot")
+    if not certbot:
+        return  # --install sets it up next
+    origin = certbot_origin(certbot)
+    if origin == "venv":
+        pip = os.path.join(CERTBOT_VENV, "bin", "pip")
+        frozen = run_command([pip, "list", "--format=freeze"], timeout=120)[1]
+        packages = {line.split("==")[0] for line in frozen.splitlines() if line.lower().startswith("certbot")}
+        run_step([pip, "install", "--upgrade", *sorted(packages | {"certbot"})], logger)
+    elif origin == "snap":
+        listed = run_command(["snap", "list"], timeout=60)[1]
+        snaps = {line.split()[0] for line in listed.splitlines() if line.startswith("certbot")}
+        run_step(["snap", "refresh", *sorted(snaps | {"certbot"})], logger)
+    else:
+        logger.warning("certbot comes from the system packages: update it with apt upgrade")
+    out, err = run_command([certbot, "--version"], timeout=60)[1:]
+    section(t("certbot update"), (out or err).strip())
+
+
+def update(config_path: str, logger: logging.Logger, checks: List[Tuple[str, str, str]]) -> bool:
+    """git pull, newest certbot and plugins, then everything --install does."""
+    with recording(logger) as rec:
+        section = row_writer(rec, checks)
+        if not is_root():
+            logger.error("Run --update as root: it installs packages and writes to /etc")
+            section(t("permissions"))
+            return False
+        pull(logger, section)
+        if any(lvl == "err" for lvl, _, _ in checks):
+            return False  # a diverged or broken checkout: fix it before touching /etc
+        upgrade_certbot(logger, section)
+    return install(config_path, logger, checks)
+
+
 def run_setup(args: argparse.Namespace, logger: logging.Logger) -> bool:
-    """--install or --uninstall, drawn as one checklist; --install ends with the full --status."""
+    """--install, --update or --uninstall, drawn as one checklist; install and update end with --status."""
     config_path = resolve_project_path(args.config)
     checks: List[Tuple[str, str, str]] = []
     config: Dict = {}
@@ -1119,7 +1179,7 @@ def run_setup(args: argparse.Namespace, logger: logging.Logger) -> bool:
         if args.uninstall:
             ok = uninstall(logger, checks)
         else:
-            ok = install(config_path, logger, checks)
+            ok = (update if args.update else install)(config_path, logger, checks)
             try:
                 config = load_config(config_path=config_path)
             except Exception:
@@ -1129,7 +1189,8 @@ def run_setup(args: argparse.Namespace, logger: logging.Logger) -> bool:
     if screen_mode(args):
         ui.fit_screen()
         ui.draw(ui.render_check(make_painter(effective_appearance(config, args)), build_ui_context(config), checks,
-                                config_path, t("uninstall") if args.uninstall else t("install")))
+                                config_path, t("uninstall") if args.uninstall else t("update") if args.update
+                                else t("install")))
     return ok
 
 
@@ -1544,6 +1605,8 @@ def main() -> None:
     parser.add_argument("--install", action="store_true",
                         help=t("Install or update certbot, DNS plugins, the xcert command, systemd units, MOTD "
                                "and logrotate (root)"))
+    parser.add_argument("--update", action="store_true",
+                        help=t("git pull, upgrade certbot and its plugins, then what --install does (root)"))
     parser.add_argument("--uninstall", action="store_true",
                         help=t("Remove what --install set up; keeps config, credentials, logs and certificates"))
     parser.add_argument("--notify-failure", action="store_true",
@@ -1555,7 +1618,7 @@ def main() -> None:
 
     logger = setup_logger(debug=args.debug)
 
-    if args.install or args.uninstall:
+    if args.install or args.update or args.uninstall:
         sys.exit(0 if run_setup(args, logger) else 1)
 
     try:
