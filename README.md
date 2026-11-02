@@ -198,10 +198,10 @@ xcert --list --theme console --colors 16 --background light
 | `default_provider` | `ovh` | Provider for domains without their own `provider`. |
 | `logs` | `1` | `1` writes Certbot output to `output` / `error` (both required then), `0` prints it to the console. |
 | `report` | `logs/xcert_report.json` | Where `--report` writes the JSON report. |
-| `certbot_config_dir` | `/etc/letsencrypt` | Certbot `--config-dir`; certificates land in `<dir>/live/<name>/`. |
+| `certbot_config_dir` | `/etc/letsencrypt` | Certbot `--config-dir`; certificates land in `<dir>/live/<name>/`, where `<name>` is the first domain of the group without `*.`. xCert passes it as `--cert-name`, so adding or removing a domain updates that certificate instead of creating `<name>-0001`. |
 | `certbot_work_dir`, `certbot_logs_dir` | `/var/lib/letsencrypt`, `/var/log/letsencrypt` | Certbot `--work-dir` and `--logs-dir`. |
-| `renew_threshold_days` | `30` | Skip certificates valid for more than this many days. Set `0` to renew on every run, which burns Let's Encrypt limits. |
-| `post_renewal_cmd` | empty | Command run after each successful renewal. It is split like a shell command but not run through a shell, so `&&` and pipes do not work; call a script for several steps. |
+| `renew_threshold_days` | `30` | Skip certificates valid for more than this many days. A certificate inside the threshold is renewed with `--force-renewal`, so values above Certbot's own 30-day window work too. Set `0` to renew on every run, which burns Let's Encrypt limits. |
+| `post_renewal_cmd` | empty | Command run after each successful renewal, skipped on dry runs. It is split like a shell command but not run through a shell, so `&&` and pipes do not work; call a script for several steps. A non-zero exit marks the certificate as failed, so `--auto` and the systemd unit fail too. |
 | `max_retries` | `3` | Attempts per certificate. Only rate-limit errors are retried; a bad token fails at once. |
 | `base_backoff_seconds`, `backoff_jitter_seconds` | `60`, `15` | Wait before retry `n` is `base * n` plus a random jitter. |
 | `command_timeout_seconds` | `900` | Certbot run is killed after this long. |
@@ -240,7 +240,7 @@ Reload the container after renewal with `post_renewal_cmd`, for example `docker 
 
 ## Automation
 
-The repository ships both units in `etc/systemd/system/`: `xcert.service` runs `--auto` as a oneshot job, `xcert.timer` starts it every Monday at 01:00 (`Persistent=true` catches up after downtime).
+The repository ships both units in `etc/systemd/system/`: `xcert.service` runs `--auto` as a oneshot job, `xcert.timer` starts it every Monday at 01:00 (`Persistent=true` catches up after downtime). The service waits for `network-online.target`, so a catch-up run right after boot does not fail on DNS. After `git pull`, copy the units again when they changed.
 
 ```bash
 cp /opt/xcert/etc/systemd/system/xcert.{service,timer} /etc/systemd/system/
