@@ -106,6 +106,23 @@ class CertbotRun(unittest.TestCase):
         self.assertFalse(main.validate_config(config, LOGGER))
 
 
+class CertificateDomains(unittest.TestCase):
+    TEXT = "X509v3 Subject Alternative Name: \n                DNS:panel.szefy.top, DNS:szefy.top\n"
+
+    def days(self, domains):
+        def fake_openssl(cmd, *args, **kwargs):
+            return mock.Mock(stdout=self.TEXT if "-text" in cmd else "notAfter=Jan 31 10:00:00 2099 GMT\n")
+        with mock.patch.object(main.subprocess, "run", side_effect=fake_openssl):
+            return main.cert_days_left(domains, general())
+
+    def test_same_domains_keep_the_expiry(self):
+        self.assertGreater(self.days(["szefy.top", "panel.szefy.top"]), 1000)
+
+    def test_added_domain_issues_now_instead_of_at_renewal(self):
+        self.assertIsNone(self.days(["szefy.top", "panel.szefy.top", "ntfy.szefy.top"]))
+        self.assertIsNone(self.days(["szefy.top"]))  # removed domain too
+
+
 class SharedCertName(unittest.TestCase):
     def test_groups_sharing_a_certificate_name_are_rejected(self):
         domains = [{"domain": "example.com", "email": "a@example.com", "provider": "ovh"},
