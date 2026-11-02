@@ -450,6 +450,9 @@ def cert_auto(
     timings: List[Tuple[float, float]] = []
     started = time.monotonic()
     shared = shared_cert_names(tasks)
+    if live:
+        ctx = build_ui_context(config)
+        print(ui.render_head(painter, ctx, t("renewal")))
     with recording(logger, quiet=live) as rec:
         for idx, task in enumerate(tasks):
             task_start = time.monotonic()
@@ -584,7 +587,11 @@ def _validate(config: Dict, logger: logging.Logger, domain_filters: Optional[Lis
         section(t("selected domains"))
         return False
 
-    providers_to_check = providers.keys() if normalized_filters is None else selected_providers
+    # Only providers a domain uses (plus the default, for new domains and --domain) need credentials;
+    # the example config lists every supported provider and most of them stay unused.
+    configured_default = {general["default_provider"]} if general.get("default_provider") and normalized_filters is None else set()
+    providers_to_check = sorted(selected_providers | configured_default)
+    unused = sorted(set(providers) - set(providers_to_check))
 
     for provider_name in providers_to_check:
         provider = providers.get(provider_name)
@@ -597,6 +604,9 @@ def _validate(config: Dict, logger: logging.Logger, domain_filters: Optional[Lis
         elif not validate_provider_runtime(provider_name, provider, logger):
             valid = False
         section(t("provider {name}", name=provider_name), (provider or {}).get("credentials_path") or "")
+    if unused and normalized_filters is None:
+        logger.debug(f"Not checked, no domain uses them: {', '.join(unused)}")
+        checks.append(("ok", t("unused providers ({n})", n=len(unused)), ", ".join(unused)))
 
     for entry in selected_domains:
         domain = entry.get("domain", "")
@@ -659,22 +669,6 @@ def show_check(painter: ui.Painter, config: Dict, logger: logging.Logger, path: 
     ui.draw(ui.render_check(painter, build_ui_context(config), checks, path))
     return ok
 
-
-def prompt_domain_filters(config: Dict, logger: logging.Logger) -> List[str]:
-    domains = config.get("domains", [])
-    if not domains:
-        logger.warning("No domains in config")
-        return []
-
-    print("\n" + t("Enter domains to validate (comma-separated, Enter = all):"))
-    print(t("Available domains:"))
-    for entry in domains:
-        print(f"  - {entry.get('domain', '')}")
-
-    raw = input(t("Domains: ")).strip()
-    if not raw:
-        return []
-    return [item.strip() for item in raw.split(",") if item.strip()]
 
 # ======================
 # CERTIFICATE VALIDITY REPORT
@@ -826,11 +820,13 @@ def make_painter(appearance: Dict[str, str], assume_terminal: bool = False) -> u
     return ui.Painter(appearance["theme"], mode, appearance["background"])
 
 
-def pick_appearance(config_path: str, appearance: Dict[str, str], logger: logging.Logger) -> None:
+def pick_appearance(config_path: str, appearance: Dict[str, str], logger: logging.Logger,
+                    states: Optional[List[ui.CertState]] = None) -> None:
     """Interactive look and language picker; saves to config.json on Enter or 's', updates `appearance` in place."""
     draft = dict(appearance)
     original_language = language = i18n.current_language()
     ctx = build_ui_context({})
+    ctx.states = states or []
     sel = ui.THEMES.index(draft["theme"])
 
     def cycle(values, value, step):
@@ -839,7 +835,7 @@ def pick_appearance(config_path: str, appearance: Dict[str, str], logger: loggin
     while True:
         painter = make_painter(draft)
         ui.draw(ui.render_picker(painter, ctx, draft, painter.mode, language, sel))
-        key = ui.read_key(ui.prompt(painter))
+        key = ui.read_key()
         step = -1 if key == "left" else 1
         if key in ("up", "down") or (key in ("left", "right") and sel < len(ui.THEMES)):
             # Up and down walk all rows; on the look rows left and right walk the looks.
@@ -889,7 +885,7 @@ def choose(painter: ui.Painter, ctx: ui.Context, title: str, options: List[str],
     sel = options.index(current) if current in options else 0
     while True:
         ui.draw(ui.render_choice(painter, ctx, title, options, sel, current))
-        key = ui.read_key(ui.prompt(painter))
+        key = ui.read_key()
         if key == "enter":
             return sel
         if key in ("q", "esc"):
@@ -902,12 +898,16 @@ def choose(painter: ui.Painter, ctx: ui.Context, title: str, options: List[str],
 
 
 def ask(label: str, default: str = "") -> str:
-    """Free-text field (domain, email, command); Enter keeps the default."""
+    """Free-text field for what cannot be picked from a list (domain, email, command); Enter keeps the default."""
+    ui.show_cursor()
     return input("  " + label).strip() or default
 
 
 def confirm(painter: ui.Painter, question: str) -> bool:
-    return ui.read_key("\n  " + painter.fg("warn", question)) in ("y", "t")
+    key = ui.read_key("\n  " + painter.fg("warn", question))
+    while key == "resize":
+        key = ui.read_key()
+    return key in ("y", "t")
 
 # ======================
 # CONFIGURATION EDITOR
@@ -942,6 +942,7 @@ def edit_config_interactive(config_path: str, logger: logging.Logger,
     providers = list(config.get("providers", {}))
     painter = make_painter(appearance or effective_appearance(config))
     ctx = build_ui_context(config)
+    ctx.states = collect_cert_states(config)
     unchanged = json.dumps(config, sort_keys=True)
 
     def fail(message: str) -> None:
@@ -963,7 +964,7 @@ def edit_config_interactive(config_path: str, logger: logging.Logger,
     while True:
         sel = min(sel, len(domains) + len(EDITOR_ITEMS) - 1)
         ui.draw(ui.render_editor(painter, ctx, config, config_path, sel, EDITOR_ITEMS, DOMAIN_ITEMS))
-        key = ui.read_key(ui.prompt(painter))
+        key = ui.read_key()
         on_domain = sel < len(domains)
         if key.isdigit():  # jump to a domain by its number
             if 1 <= int(key) <= len(domains):
@@ -1100,10 +1101,11 @@ def interactive_menu(config: Dict, logger: logging.Logger, config_path: str,
     while True:
         painter = make_painter(appearance)
         ctx = build_ui_context(config)
-        ui.draw(ui.render_menu(painter, ctx, collect_cert_states(config), MENU_ITEMS, sel))
-        key = ui.read_key(ui.prompt(painter))
+        ctx.states = collect_cert_states(config)
+        ui.draw(ui.render_menu(painter, ctx, ctx.states, MENU_ITEMS, sel))
+        key = ui.read_key()
         key = MENU_ALIASES.get(key, key)
-        if key in ("up", "down", "left", "right"):
+        if key in ("up", "down", "left", "right", "resize"):
             sel = ui.move(key, sel, len(keys), ui.nav_step(painter.theme, len(keys)))
             continue
         key = {"enter": keys[sel], "esc": "q"}.get(key, key)
@@ -1113,7 +1115,7 @@ def interactive_menu(config: Dict, logger: logging.Logger, config_path: str,
         sel = keys.index(key)
 
         if key == "o":
-            ui.draw(ui.render_head(painter, ctx, t("renewal")))
+            ui.clear()
             cert_auto(config, logger, painter=painter, live=screen_mode())
         elif key == "w":
             ui.draw(ui.render_head(painter, ctx, t("issue")))
@@ -1146,11 +1148,9 @@ def interactive_menu(config: Dict, logger: logging.Logger, config_path: str,
                 ui.pause(painter)
             continue
         elif key == "s":
-            ui.draw(ui.render_head(painter, ctx, t("checking")))
-            selected = prompt_domain_filters(config, logger)
-            show_check(painter, config, logger, config_path, selected or None)
+            show_check(painter, config, logger, config_path)
         elif key == "t":
-            pick_appearance(config_path, appearance, logger)
+            pick_appearance(config_path, appearance, logger, ctx.states)
             continue
         elif key == "q":
             break
@@ -1239,12 +1239,17 @@ def main() -> None:
         print(ui.render_motd(painter, build_ui_context(config), collect_cert_states(config)))
         return
 
-    if args.menu:
-        interactive_menu(config, logger, config_path, appearance)
-        return
-
-    if args.edit_config:
-        edit_config_interactive(config_path, logger, appearance)
+    ui.fit_screen()
+    if args.menu or args.edit_config:
+        try:
+            if args.menu:
+                interactive_menu(config, logger, config_path, appearance)
+            else:
+                edit_config_interactive(config_path, logger, appearance)
+        except KeyboardInterrupt:
+            print()
+        finally:
+            ui.show_cursor()
         return
 
     if args.report:

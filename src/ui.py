@@ -8,6 +8,8 @@ Every screen fits in 80 columns and avoids emoji, whose width terminals disagree
 import math
 import os
 import re
+import shutil
+import signal
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -20,8 +22,13 @@ COLOR_MODES = ("auto", "full", "16", "none")
 BACKGROUNDS = ("dark", "light")
 DEFAULT_APPEARANCE = {"theme": "ledger", "colors": "auto", "background": "dark"}
 
+# Screen size. Layouts are designed for 80 columns; on a wider terminal fit_screen() stretches bars,
+# rules and text columns, and ROWS (0 = unlimited, as for pipes and tests) scrolls long lists.
+MIN_WIDTH, MAX_WIDTH = 80, 160
 WIDTH = 80
 INNER = WIDTH - 2
+ROWS = 0
+TERM_COLS = 0  # real terminal width when it is narrower than MIN_WIDTH, 0 otherwise
 CRITICAL_DAYS = 7
 AXIS_DAYS = 90
 AXIS_COLS = 45  # two days per column keeps the timeline inside 80 columns
@@ -165,6 +172,7 @@ class Context:
     now: datetime
     threshold: int = 30
     next_run: Optional[datetime] = None
+    states: List[CertState] = field(default_factory=list)  # for the console title counters
 
 
 def category(s: CertState, threshold: int) -> str:
@@ -252,7 +260,8 @@ def clip(text: str, width: int) -> str:
     return text if len(text) <= width else text[:max(0, width - 1)] + "…"
 
 
-def row(left: str, right: str, width: int = INNER) -> str:
+def row(left: str, right: str, width: Optional[int] = None) -> str:
+    width = INNER if width is None else width
     return left + " " * max(1, width - visible_len(left) - visible_len(right)) + right
 
 
@@ -314,7 +323,24 @@ def _mark(p: Painter, on: bool) -> str:
 
 
 def _hint(p: Painter, back: bool = False) -> str:
-    return "  " + p.dim(t("↑↓ move   Enter select   q back") if back else t("↑↓ move   Enter select"))
+    text = t("↑↓ move   Enter select   q back") if back else t("↑↓ move   Enter select")
+    return _bar(p, [("bar", " " + text + " ", False), None]) if p.theme == "console" else "  " + p.dim(text)
+
+
+def _room(fixed: int) -> int:
+    """Lines left for a scrolling list once `fixed` lines are drawn; 0 means no limit."""
+    return max(3, ROWS - 1 - fixed) if ROWS else 0
+
+
+def _window(p: Painter, lines: List[str], sel: Optional[int], room: int) -> List[str]:
+    """The rows that fit in `room` lines, scrolled to keep `sel` in view, with counts of the hidden ones."""
+    if not room or len(lines) <= room:
+        return lines
+    body = room - 2
+    start = 0 if sel is None else min(max(0, sel - body // 2), len(lines) - body)
+    below = len(lines) - start - body
+    return ([p.dim("    ↑ " + t("{n} more", n=start)) if start else ""] + lines[start:start + body]
+            + [p.dim("    ↓ " + t("{n} more", n=below)) if below else ""])
 
 
 def _action_rows(p: Painter, items, sel: Optional[int] = None, first: int = 0) -> List[str]:
@@ -331,7 +357,7 @@ def _head(p: Painter, ctx: Context, sub: str) -> List[str]:
     if p.theme == "timeline":
         return [row(p.fg("accent", "xCert", bold=True) + "  " + p.dim(ctx.version) + "   " + p.bold(sub),
                     p.dim(run_label(ctx)))]
-    return [_title(p, ctx, [], sub)]
+    return [_title(p, ctx, ctx.states, sub)]
 
 
 # ======================
@@ -553,10 +579,11 @@ def _meter(p: Painter, s: CertState, ctx: Context, inner: int) -> str:
 
 
 def _fkeys(p: Painter, items, sel: Optional[int] = None) -> str:
-    cw = WIDTH // len(items)
+    widths = [WIDTH // len(items)] * len(items)
+    widths[-1] += WIDTH - sum(widths)  # the last key takes the remainder, so the bar spans the screen
     return "".join(p.fg("accent", key, bold=True)
                    + p.chip("bar", pad(("▸" if i == sel else " ") + short, cw - len(key)), accent=i == sel)
-                   for i, (key, _, short) in enumerate(items))
+                   for i, ((key, _, short), cw) in enumerate(zip(items, widths)))
 
 
 def console_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
@@ -584,12 +611,11 @@ def console_summary(p: Painter, ctx: Context, results, timings, elapsed: float) 
 
 
 def console_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
-    out = [_title(p, ctx, states, "menu"), ""]
-    out += [f"  {pad(clip(s.name, 25), 26)}{_meter(p, s, ctx, 42)}" for s in states]
-    out += ["", "  " + p.dim(t("timer")) + "  " + (p.fg("ok", t("active")) + ", " + run_label(ctx) if ctx.next_run
+    meters = [f"  {pad(clip(s.name, 25), 26)}{_meter(p, s, ctx, WIDTH - 38)}" for s in states]
+    tail = ["", "  " + p.dim(t("timer")) + "  " + (p.fg("ok", t("active")) + ", " + run_label(ctx) if ctx.next_run
                                                    else p.fg("err", t("not active"))), "", _hint(p),
             _fkeys(p, items, sel)]
-    return "\n".join(out)
+    return "\n".join([_title(p, ctx, states, "menu"), ""] + _window(p, meters, None, _room(2 + len(tail))) + tail)
 
 
 def console_motd(p: Painter, ctx: Context, states) -> str:
@@ -629,10 +655,6 @@ def render_motd(p: Painter, ctx: Context, states) -> str:
 
 def render_head(p: Painter, ctx: Context, sub: str) -> str:
     return "\n".join(_head(p, ctx, sub))
-
-
-def prompt(p: Painter) -> str:
-    return p.fg("accent", t("choose ›") if p.theme == "console" else "›") + " "
 
 
 def nav_step(theme: str, count: int) -> int:
@@ -678,8 +700,14 @@ def render_picker(p: Painter, ctx: Context, appearance: Dict[str, str], effectiv
             p.dim("  " + t("one-off for a single command:") + " xcert --theme console --colors 16 --list"),
             p.dim("  " + t("NO_COLOR, journald and cron always get plain text")),
             "",
-            "  " + "   ".join(f"{p.fg('accent', k, bold=True)} {label}" for k, label in keys)]
+            _keys_line(p, keys)]
     return "\n".join(out)
+
+
+def _keys_line(p: Painter, keys: Sequence[Tuple[str, str]]) -> str:
+    if p.theme == "console":
+        return _fkeys(p, [(key, "", label) for key, label in keys])
+    return "  " + "   ".join(f"{p.fg('accent', k, bold=True)} {label}" for k, label in keys)
 
 
 def render_editor(p: Painter, ctx: Context, config: Dict, path: str, sel: int, items, domain_items) -> str:
@@ -696,32 +724,38 @@ def render_editor(p: Painter, ctx: Context, config: Dict, path: str, sel: int, i
     if p.theme == "console":
         out.append(p.chip("bar", pad("    " + pad(t("no."), 4) + pad(t("domain"), 28) + pad(t("provider"), 14)
                                      + t("email"), WIDTH)))
+    rows = []
     for i, d in enumerate(domains):
         on = i == sel
         name = pad(clip(d.get("domain", ""), 27), 28)
-        out.append(f" {_mark(p, on)}{p.fg('accent', rpad(str(i + 1), 2))}{sep} " + (p.bold(name) if on else name)
-                   + p.dim(pad(clip(d.get("provider") or default, 13), 14)) + p.dim(clip(d.get("email", ""), 30)))
+        rows.append(f" {_mark(p, on)}{p.fg('accent', rpad(str(i + 1), 2))}{sep} " + (p.bold(name) if on else name)
+                    + p.dim(pad(clip(d.get("provider") or default, 13), 14)) + p.dim(clip(d.get("email", ""), INNER - 48)))
     if not domains:
-        out.append("  " + p.dim(t("No domains configured.")))
+        rows.append("  " + p.dim(t("No domains configured.")))
     hint = "  " + p.dim(t("on a domain:")) + "  " + "   ".join(
         f"{p.fg('accent', key, bold=True)} {t(short)}" for key, _, short in [("Enter", "", "more")] + list(domain_items))
     if p.theme == "console":
         items = [(key, t(label), t(short)) for key, label, short in items]
-        return "\n".join(out + ["", hint, _hint(p), _fkeys(p, items, sel - len(domains))])
-    items = [(key, t(label), short) for key, label, short in items]
-    return "\n".join(out + [""] + _action_rows(p, items, sel, len(domains)) + ["", hint, _hint(p)])
+        tail = ["", hint, _hint(p), _fkeys(p, items, sel - len(domains))]
+    else:
+        items = [(key, t(label), short) for key, label, short in items]
+        tail = [""] + _action_rows(p, items, sel, len(domains)) + ["", hint, _hint(p)]
+    focus = sel if sel < len(domains) else len(domains) - 1
+    return "\n".join(out + _window(p, rows, focus, _room(len(out) + len(tail))) + tail)
 
 
 def render_choice(p: Painter, ctx: Context, title: str, options: Sequence[str], sel: int,
                   current: Optional[str] = None) -> str:
     """Short pick list (providers, actions on a domain) in the current look."""
     out = _head(p, ctx, title) + [""]
+    rows = []
     for i, option in enumerate(options):
         on = i == sel
-        text = clip(option, 50)
-        out.append(f" {_mark(p, on)}{p.fg('accent', rpad(str(i + 1), 2), bold=True)}  " + (p.bold(text) if on else text)
-                   + (p.dim("  " + t("(current)")) if option == current else ""))
-    return "\n".join(out + ["", _hint(p, back=True)])
+        text = clip(option, INNER - 28)
+        rows.append(f" {_mark(p, on)}{p.fg('accent', rpad(str(i + 1), 2), bold=True)}  " + (p.bold(text) if on else text)
+                    + (p.dim("  " + t("(current)")) if option == current else ""))
+    tail = ["", _hint(p, back=True)]
+    return "\n".join(out + _window(p, rows, sel, _room(len(out) + len(tail))) + tail)
 
 
 def render_report(p: Painter, ctx: Context, states: Sequence[CertState], path: str) -> str:
@@ -742,7 +776,7 @@ def render_report(p: Painter, ctx: Context, states: Sequence[CertState], path: s
         segs: List[Optional[Tuple[str, str, bool]]] = [(lvl, f" {n} {t(label)} ", False)
                                                         for n, label, lvl in counts(states, ctx.threshold)]
         head = " " + _tag(p, "ok", t("  OK  ")) + " " + saved + ": " + clip(path, INNER - len(saved) - 12)
-        return "\n".join([head, _bar(p, segs + [None])] + lines)
+        return "\n".join(_head(p, ctx, t("Report")) + [head, _bar(p, segs + [None])] + lines)
     head = p.fg("ok", "✓") + " " + saved + "  " + p.dim(clip(path, INNER - len(saved) - 4))
     return "\n".join(([_strip(p, states, ctx)] if p.theme == "timeline" else []) + [head] + lines)
 
@@ -856,38 +890,122 @@ def interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
 
 
+class _Resized(Exception):
+    pass
+
+
+def _on_resize(signum, frame):
+    raise _Resized
+
+
+def set_screen(cols: int, rows: int = 0) -> None:
+    global WIDTH, INNER, ROWS, TERM_COLS
+    WIDTH = max(MIN_WIDTH, min(MAX_WIDTH, cols))
+    INNER = WIDTH - 2
+    ROWS = rows
+    TERM_COLS = cols if cols < MIN_WIDTH else 0
+
+
+def fit_screen() -> None:
+    """Sizes the next frame to the terminal window (PuTTY, tmux, a resized xterm)."""
+    if interactive():
+        size = shutil.get_terminal_size()
+        set_screen(size.columns, size.lines)
+
+
 def read_key(prompt_text: str = "") -> str:
-    """One key press, no Enter needed. Off a terminal (pipes, tests) it reads a whole line instead."""
+    """One key press, no Enter needed; 'resize' when the window changed size meanwhile.
+
+    Off a terminal (pipes, tests) it reads a whole line instead.
+    """
+    global _pending
     if not interactive():
         return input(prompt_text).strip().lower() or "enter"
-    import select
-    import termios
-    import tty
     sys.stdout.write(prompt_text)
     sys.stdout.flush()
-    fd = sys.stdin.fileno()
-    saved = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        data = os.read(fd, 1)
-        # Arrows arrive as ESC [ A in one burst, a lone Esc has nothing behind it; UTF-8 letters span bytes.
-        if data == b"\x1b" or (data and data[0] >= 0xC0):
-            while select.select([fd], [], [], 0.03)[0]:
-                data += os.read(fd, 8)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+    if not _pending:
+        import select
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        saved = termios.tcgetattr(fd)
+        previous = signal.signal(signal.SIGWINCH, _on_resize)
+        try:
+            tty.setraw(fd)
+            _pending = os.read(fd, 64)
+            # An arrow is ESC [ A; a lone Esc has nothing behind it, so wait a moment for the rest.
+            if _pending == b"\x1b" and select.select([fd], [], [], 0.03)[0]:
+                _pending += os.read(fd, 64)
+        except _Resized:
+            _pending = b""
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+            signal.signal(signal.SIGWINCH, previous)
+        fit_screen()
+        if not _pending:
+            return "resize"
+    # A held-down arrow delivers several keys in one read; hand them out one at a time.
+    data, _pending = split_key(_pending)
     return decode_key(data)
+
+
+_pending = b""
+
+
+def split_key(buf: bytes) -> Tuple[bytes, bytes]:
+    """First key press in `buf` and the rest: an escape sequence, a UTF-8 character or a single byte."""
+    if buf[:1] == b"\x1b" and buf[1:2] in (b"[", b"O"):
+        end = 2
+        while end < len(buf) and not 0x40 <= buf[end] <= 0x7E:  # CSI parameters run up to a final byte
+            end += 1
+        return buf[:end + 1], buf[end + 1:]
+    if buf[0] >= 0xC0:
+        size = 2 if buf[0] < 0xE0 else 3 if buf[0] < 0xF0 else 4
+        return buf[:size], buf[size:]
+    return buf[:1], buf[1:]
+
+
+def cut(text: str, width: int) -> str:
+    """Cuts a painted line to `width` visible columns, keeping its colour codes intact."""
+    out, seen = [], 0
+    for piece in re.split(r"(\x1b\[[0-9;]*m)", text):
+        if piece.startswith("\x1b"):
+            out.append(piece)
+        elif seen < width:
+            out.append(piece[:width - seen])
+            seen += len(out[-1])
+    return "".join(out) + ("\033[0m" if "\x1b" in text else "")
+
+
+def clear() -> None:
+    """Clears the terminal and hides the cursor: these screens are driven by keys, there is nothing to type."""
+    if interactive():
+        sys.stdout.write("\033[?25l\033[H\033[J")
+
+
+def show_cursor() -> None:
+    if interactive():
+        sys.stdout.write("\033[?25h")
+        sys.stdout.flush()
 
 
 def draw(text: str) -> None:
     """Redraws the screen in place on a terminal, so menus do not pile up; appends below otherwise."""
-    print(("\033[H\033[J" if interactive() else "\n") + text)
+    if not interactive():
+        print("\n" + text)
+        return
+    if TERM_COLS:  # narrower than the layouts: cut instead of letting every line wrap
+        text = "\n".join(cut(line, TERM_COLS) for line in text.split("\n"))
+    clear()
+    print(text)
 
 
 def pause(p: Painter) -> None:
     """Keeps a result on screen until a key is pressed, before the menu redraws over it."""
     if interactive():
-        read_key("\n" + p.dim(t("press any key to go back")))
+        sys.stdout.write("\n" + p.dim(t("press any key to go back")))
+        while read_key() == "resize":
+            pass
 
 
 def move(key: str, index: int, count: int, step: int = 1) -> int:

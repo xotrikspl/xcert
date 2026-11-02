@@ -75,7 +75,6 @@ PL = {
     "timer": "timer",
     "active": "aktywny",
     "not active": "nieaktywny",
-    "choose ›": "wybierz ›",
     # Menu
     "renew everything that qualifies": "odnów wszystko, co się kwalifikuje",
     "issue a certificate for one domain": "wystaw certyfikat dla jednej domeny",
@@ -111,10 +110,6 @@ PL = {
     "one-off for a single command:": "jednorazowo dla jednej komendy:",
     "NO_COLOR, journald and cron always get plain text": "NO_COLOR, journald i cron zawsze dostają czysty tekst",
     # Prompts
-    "Enter domains to validate (comma-separated, Enter = all):":
-        "Podaj domeny do sprawdzenia (po przecinku, Enter = wszystkie):",
-    "Available domains:": "Dostępne domeny:",
-    "Domains: ": "Domeny: ",
     "Domain: ": "Domena: ",
     "Email: ": "E-mail: ",
     # Configuration editor
@@ -186,6 +181,8 @@ PL = {
     "issuing via {provider} ...": "wystawiam przez {provider} ...",
     "done via {provider}": "odnowiono przez {provider}",
     "pause {n} s before the next certificate": "pauza {n} s przed następnym certyfikatem",
+    "{n} more": "jeszcze {n}",
+    "unused providers ({n})": "nieużywani dostawcy ({n})",
     # --help
     "xCert - Let's Encrypt certificate automation with 13+ DNS providers":
         "xCert - automatyzacja certyfikatów Let's Encrypt dla 13+ dostawców DNS",
