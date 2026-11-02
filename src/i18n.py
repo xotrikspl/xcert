@@ -202,6 +202,8 @@ PL = {
     "Validate config.json and provider credentials": "Sprawdź config.json i poświadczenia dostawców",
     "Limit --validate-config to specific domain(s), can be repeated":
         "Ogranicz --validate-config do wybranych domen, można powtarzać",
+    "--validate-domain only works together with --validate-config":
+        "--validate-domain działa tylko razem z --validate-config",
     "Path to config.json (default: {path})": "Ścieżka do config.json (domyślnie: {path})",
     "Print the short certificate status used at SSH login": "Wypisz krótki status certyfikatów pokazywany przy logowaniu SSH",
     "Look for this run: ledger, timeline or console": "Wygląd na to uruchomienie: ledger, timeline lub console",

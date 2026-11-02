@@ -398,21 +398,14 @@ def run_post_renewal(post_cmd: List[str], domain_label: str, dry: bool, logger: 
     return True
 
 # ======================
-# SINGLE DOMAIN (thin wrapper)
+# SINGLE DOMAIN
 # ======================
-def cert_for_domain(
-    domain_config: Dict,
-    general_config: Dict,
-    providers_config: Dict,
-    logger: logging.Logger,
-    dry_run: bool = False,
-) -> bool:
-    domain = domain_config["domain"]
-    email = domain_config["email"]
-    provider_name = domain_config.get("provider", general_config.get("default_provider", "ovh"))
-    return cert_for_domains(
-        [domain], email, provider_name, general_config, providers_config, logger, dry_run=dry_run
-    )
+def issue_one(config: Dict, entry: Dict, logger: logging.Logger, dry_run: bool = False,
+              painter: Optional[ui.Painter] = None, live: bool = False) -> bool:
+    """One domain from the menu or --domain, shown on the same progress screen as a full run."""
+    results = cert_auto({**config, "domains": [entry]}, logger, dry_run=dry_run, painter=painter, live=live)
+    return bool(results) and all(ok for _, ok in results)
+
 
 # ======================
 # AUTOMATIC CERTIFICATION
@@ -903,6 +896,21 @@ def ask(label: str, default: str = "") -> str:
     return input("  " + label).strip() or default
 
 
+def ask_domain(painter: ui.Painter, logger: logging.Logger, default_email: str) -> Optional[Tuple[str, str]]:
+    """Domain and email typed by hand, each checked right after it is typed; None after an error."""
+    domain = ask(t("Domain: "))
+    if not is_valid_domain(domain):
+        logger.error(f"Invalid domain: {domain}")
+        ui.pause(painter)
+        return None
+    email = ask(t("Email [Enter = {value}]: ", value=default_email), default_email) if default_email         else ask(t("Email: "))
+    if not is_valid_email(email):
+        logger.error(f"Invalid email: {email}")
+        ui.pause(painter)
+        return None
+    return domain, email
+
+
 def confirm(painter: ui.Painter, question: str) -> bool:
     key = ui.read_key("\n  " + painter.fg("warn", question))
     while key == "resize":
@@ -987,15 +995,10 @@ def edit_config_interactive(config_path: str, logger: logging.Logger,
 
         if key == "n":
             print()
-            domain = ask(t("Domain: "))
-            last_email = domains[-1].get("email", "") if domains else ""
-            email = ask(t("Email [Enter = {value}]: ", value=last_email), last_email) if last_email else ask(t("Email: "))
-            if not is_valid_domain(domain):
-                fail(f"Invalid domain: {domain}")
+            typed = ask_domain(painter, logger, domains[-1].get("email", "") if domains else "")
+            if typed is None:
                 continue
-            if not is_valid_email(email):
-                fail(f"Invalid email: {email}")
-                continue
+            domain, email = typed
             provider = pick_provider(t("provider for {domain}", domain=domain), default_prov)
             if provider is None:
                 continue
@@ -1119,20 +1122,18 @@ def interactive_menu(config: Dict, logger: logging.Logger, config_path: str,
             cert_auto(config, logger, painter=painter, live=screen_mode())
         elif key == "w":
             ui.draw(ui.render_head(painter, ctx, t("issue")))
-            domain = ask(t("Domain: "))
-            email = ask(t("Email: "))
-            if not domain or not email:
-                logger.error("Domain and email are required.")
-                ui.pause(painter)
+            domains = config.get("domains", [])
+            typed = ask_domain(painter, logger, domains[0].get("email", "") if domains else "")
+            if typed is None:
                 continue
             providers = list(config.get("providers", {}))
-            i = choose(painter, ctx, t("provider for {domain}", domain=domain), providers,
+            i = choose(painter, ctx, t("provider for {domain}", domain=typed[0]), providers,
                        config["general"].get("default_provider"))
             if i is None:
                 continue
-            ui.draw(ui.render_head(painter, ctx, t("issue")))
-            cert_for_domain({"domain": domain, "email": email, "provider": providers[i]},
-                            config["general"], config["providers"], logger)
+            ui.clear()
+            issue_one(config, {"domain": typed[0], "email": typed[1], "provider": providers[i]}, logger,
+                      painter=painter, live=screen_mode())
         elif key == "r":
             path = generate_cert_report(config, logger)
             ui.draw(ui.render_report(painter, ctx, collect_cert_states(config), path))
@@ -1206,6 +1207,8 @@ def main() -> None:
                         help=t("Send the failure notice through general.notify_cmd (used by xcert-notify.service)"))
 
     args = parser.parse_args()
+    if args.validate_domain and not args.validate_config:
+        parser.error(t("--validate-domain only works together with --validate-config"))
 
     logger = setup_logger(debug=args.debug)
 
@@ -1292,7 +1295,8 @@ def main() -> None:
             logger.error(f"❌ Unknown provider: {provider}. Available: {', '.join(config['providers'].keys())}")
             sys.exit(1)
         domain_entry = {"domain": args.domain, "email": args.email, "provider": provider}
-        success = cert_for_domain(domain_entry, config["general"], config["providers"], logger, dry_run=args.dry_run)
+        success = issue_one(config, domain_entry, logger, dry_run=args.dry_run, painter=make_painter(appearance),
+                            live=screen_mode(args))
         sys.exit(0 if success else 1)
 
     parser.print_help()
