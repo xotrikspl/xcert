@@ -124,6 +124,8 @@ Every command accepts `--config PATH` (default: `config/config.json` in the repo
 
 On a terminal, `--auto` shows one progress line per certificate (skipped, renewing, done or failed, with the reason) and `--validate-config` shows one row per section and provider, both in the chosen look. The full log still goes to the log files; add `--debug` to see it on screen instead. Under systemd, cron and pipes both commands print the plain log as before.
 
+`--validate-config` only checks the providers your domains use, plus `general.default_provider`; the others listed in `providers` need no credentials file and show up as one "unused providers" row. Interactive screens follow the terminal window: wider windows (up to 160 columns) stretch bars and columns, short ones scroll the domain list, and resizing the window (PuTTY, tmux) redraws the screen.
+
 ## Appearance
 
 Three looks, all within 80 columns and without emoji so columns stay aligned in any terminal:
