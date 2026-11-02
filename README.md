@@ -5,7 +5,8 @@ One installation per server that issues and renews Let's Encrypt certificates fo
 - 13 DNS providers through the official Certbot plugins (OVH, Cloudflare, Route53, DigitalOcean, Google, Linode and more)
 - Renews only what is close to expiry, groups `example.com` and `*.example.com` into one certificate
 - Backs off and retries when a DNS provider rate-limits, with a timeout on every Certbot run
-- Weekly systemd timer, certificate status at SSH login, JSON validity report
+- One command sets up a server: Certbot, DNS plugins, systemd timer, SSH login status and log rotation
+- Weekly systemd timer whose failures show up in the CLI and at SSH login, JSON validity report
 - Interactive menu and config editor; three terminal looks with 24-bit, 16-colour or plain output
 - Python 3 standard library only, no pip packages for xCert itself
 
@@ -13,63 +14,57 @@ One installation per server that issues and renews Let's Encrypt certificates fo
 
 - Linux with systemd (Debian 11+, Ubuntu 22.04+ or similar), run as root
 - Python 3.9+
-- Certbot with the DNS plugin for your provider
-- `openssl` (certificate dates)
+- Certbot with the DNS plugin for your provider and `openssl`; `xcert --install` sets both up
 
 ## Installation
 
-### 1. Certbot and a DNS plugin
+### 1. xCert and everything around it
 
-Pick one method. Both install Certbot to `/usr/bin/certbot` or `/snap/bin/certbot`, which is what `cmd_template` calls.
-
-**pip in a virtual environment** (supported by Certbot only inside a venv):
+The repository is the installation: clone it (to `/opt/xcert` or anywhere else) and let `--install` set up the rest.
 
 ```bash
-apt update && apt install -y python3-venv openssl
-python3 -m venv /opt/certbot
-/opt/certbot/bin/pip install --upgrade pip
-/opt/certbot/bin/pip install certbot certbot-dns-ovh   # swap the plugin for your provider
-ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
-```
-
-Upgrade later with `/opt/certbot/bin/pip install --upgrade certbot certbot-dns-ovh`.
-
-**snap**:
-
-```bash
-snap install --classic certbot
-snap set certbot trust-plugin-with-root=ok
-snap install certbot-dns-ovh
-```
-
-Available plugins: `certbot-dns-cloudflare`, `-digitalocean`, `-dnsimple`, `-dnsmadeeasy`, `-gehirn`, `-google`, `-linode`, `-luadns`, `-nsone`, `-ovh`, `-rfc2136`, `-route53`, `-sakuracloud`.
-
-### 2. xCert
-
-The repository is the installation: clone it to `/opt/xcert` and update it with `git pull`.
-
-```bash
+apt update && apt install -y git python3
 git clone https://github.com/xotrikspl/xcert.git /opt/xcert
-cd /opt/xcert
-cp config/config.json.example config/config.json
-chmod 700 secrets
-ln -sf /opt/xcert/bin/xcert /usr/local/bin/xcert
+/opt/xcert/bin/xcert --install
 ```
+
+`--install` runs as root, shows one row per step and can be run again at any time, for example after `git pull`:
+
+| Step | What it does |
+|------|--------------|
+| `config.json` | Copies `config.json.example` when there is no config yet (mode 600). |
+| `secrets/`, `logs/` | Creates them; `secrets/` and the files in it become readable by root only. |
+| `xcert` command | Symlinks `bin/xcert` into `/usr/local/bin`. |
+| System packages | Installs `openssl`, plus `python3-venv` when Certbot is missing (apt only). |
+| Certbot | When missing: a virtual environment in `/opt/certbot` (the pip install Certbot supports) linked to `/usr/bin/certbot`. |
+| DNS plugins | `certbot-dns-*` for the providers your domains and `default_provider` use: with pip for the `/opt/certbot` venv, with snap for the Certbot snap. A Certbot from distribution packages gets the `apt install` line to run instead. |
+| Units, MOTD, logrotate | Copies `etc/` into `/etc` with `/opt/xcert` replaced by the real location and Windows line endings removed. |
+| Timer | `systemctl daemon-reload` and `systemctl enable --now xcert.timer`. |
+
+It ends with the full `--status` screen, so a fresh install lists what is left to do: credentials and domains. Change providers in the config later? Run `--install` again to add their plugins.
+
+`xcert --uninstall` removes the timer, units, MOTD script, logrotate file and the `xcert` symlink. Config, credentials, logs, certificates and Certbot stay.
 
 ```
 /opt/xcert
 ├── bin/xcert           CLI wrapper, symlinked into /usr/local/bin
-├── src/                xCert itself (main.py, ui.py, json_loader.py)
+├── src/                xCert itself (main.py, ui.py, i18n.py, json_loader.py)
 ├── config/             config.json (yours, not in git) and config.json.example
 ├── secrets/            DNS provider credentials (not in git)
 ├── logs/               xCert logs and the JSON report (not in git)
-├── etc/                systemd units and the MOTD script to copy into /etc
+├── etc/                systemd units, MOTD script and logrotate file that --install copies into /etc
 └── tests/
 ```
 
-Updating: `cd /opt/xcert && git pull`. Your `config/config.json`, `secrets/` and `logs/` are ignored by git, so a pull never touches them.
+Updating: `cd /opt/xcert && git pull && xcert --install`. Your `config/config.json`, `secrets/` and `logs/` are ignored by git, so a pull never touches them.
 
-Coming from 1.2 or older (`/root/.xcert`): move `/root/.xcert/config.json` to `/opt/xcert/config/config.json`, then copy the systemd unit and MOTD script again (steps in [Automation](#automation) and [Status at SSH login](#status-at-ssh-login)) and remove `/root/.xcert`. Absolute paths in an old config keep working.
+Prefer Certbot from snap? Install it before `--install` (`snap install --classic certbot`) and `--install` adds the plugins as snaps. Available plugins: `certbot-dns-cloudflare`, `-digitalocean`, `-dnsimple`, `-dnsmadeeasy`, `-gehirn`, `-google`, `-linode`, `-luadns`, `-nsone`, `-ovh`, `-rfc2136`, `-route53`, `-sakuracloud`.
+
+Coming from 1.2 or older (`/root/.xcert`): move `/root/.xcert/config.json` to `/opt/xcert/config/config.json`, run `xcert --install` and remove `/root/.xcert`. Absolute paths in an old config keep working.
+
+### 2. Domains
+
+Add your domains with `xcert --edit-config` (or edit `config/config.json`, see [Configuration](#configuration)).
 
 ### 3. DNS provider credentials
 
@@ -90,12 +85,10 @@ chmod 600 /opt/xcert/secrets/ovh.ini
 
 Cloudflare uses `dns_cloudflare_api_token = YOUR_TOKEN` in `secrets/cloudflare.ini`. Every other plugin documents its file format in the Certbot docs. Route53 reads AWS credentials from the environment or an IAM role, so its provider has no `credentials_path`. `xcert --validate-config` warns when a credentials file is readable by anyone other than root.
 
-### 4. Configure and test
-
-Edit `config/config.json` (see [Configuration](#configuration)), then:
+### 4. Test
 
 ```bash
-xcert --validate-config        # config, providers and credential files
+xcert --status                 # config, credentials, Certbot, plugins, units and the timer
 xcert --auto --dry-run         # full run against the Let's Encrypt staging flow, nothing is issued
 xcert --auto                   # issue the certificates
 ```
@@ -105,12 +98,16 @@ Let's Encrypt allows only 5 duplicate certificates per week, so test with `--dry
 ## Usage
 
 ```bash
+xcert                          # on a terminal: the interactive menu, otherwise this help
 xcert --auto                   # renew everything that qualifies
 xcert --auto --dry-run         # same, without issuing anything
 xcert --domain shop.example.com --email admin@example.com [--provider cloudflare]
 xcert --list                   # certificates, days left, next timer run
 xcert --report                 # write the JSON validity report
-xcert --validate-config [--validate-domain example.com]
+xcert --status                 # everything below plus Certbot, plugins, units, timer and its last run
+xcert --validate-config [--validate-domain example.com]   # config and credentials only
+xcert --install                # set up or update the server (root), see Installation
+xcert --uninstall              # undo --install, keeps config, credentials and certificates
 xcert --menu                   # interactive menu
 xcert --edit-config            # interactive config editor
 xcert --motd                   # short status, used at SSH login
@@ -118,11 +115,11 @@ xcert --version
 xcert --auto --debug           # verbose logging, combines with any flag
 ```
 
-Every command accepts `--config PATH` (default: `config/config.json` in the repository), `--lang en|pl` and the appearance overrides below. `--auto` exits with code 1 when any certificate fails, so the systemd unit shows up as failed.
+Every command accepts `--config PATH` (default: `config/config.json` in the repository), `--lang en|pl` and the appearance overrides below. `--auto` exits with code 1 when any certificate fails, so the systemd unit shows up as failed. `--status`, `--validate-config` and `--install` exit with 1 when a row shows an error.
 
 `--menu` and `--edit-config` work with the arrow keys and Enter; each item's letter is a shortcut and `q` or Esc goes back. Screens redraw in place instead of scrolling. In the editor, Enter on a domain lists what you can do with it (change domain or email, change provider, remove), and providers are picked from a list, so only domains, emails and the post-renewal command are typed. Without a terminal (pipes, scripts) both read one line per choice instead.
 
-On a terminal, `--auto` shows one progress line per certificate (skipped, renewing, done or failed, with the reason) and `--validate-config` shows one row per section and provider, both in the chosen look. The full log still goes to the log files; add `--debug` to see it on screen instead. Under systemd, cron and pipes both commands print the plain log as before.
+On a terminal, `--auto` and `--domain` show one progress line per certificate (skipped, renewing, done or failed, with the reason) and `--status`, `--validate-config` and `--install` show one row per check, all in the chosen look; the menu's Issue and Check use the same screens. The full log still goes to the log files; add `--debug` to see it on screen instead. Under systemd, cron and pipes both commands print the plain log as before.
 
 `--validate-config` only checks the providers your domains use, plus `general.default_provider`; the others listed in `providers` need no credentials file and show up as one "unused providers" row. Interactive screens follow the terminal window: wider windows (up to 160 columns) stretch bars and columns, short ones scroll the domain list, and resizing the window (PuTTY, tmux) redraws the screen.
 
@@ -248,15 +245,14 @@ Reload the container after renewal with `post_renewal_cmd`, for example `docker 
 
 ## Automation
 
-The repository ships the units in `etc/systemd/system/`: `xcert.service` runs `--auto` as a oneshot job, `xcert.timer` starts it every Monday between 01:00 and 02:00 (a random delay keeps clients off the full hour, `Persistent=true` catches up after downtime), and `xcert-notify.service` sends the failure notice. The service waits for `network-online.target`, so a catch-up run right after boot does not fail on DNS. After `git pull`, copy the units again when they changed.
+The repository ships the units in `etc/systemd/system/`: `xcert.service` runs `--auto` as a oneshot job, `xcert.timer` starts it every Monday between 01:00 and 02:00 (a random delay keeps clients off the full hour, `Persistent=true` catches up after downtime), and `xcert-notify.service` sends the failure notice. The service waits for `network-online.target`, so a catch-up run right after boot does not fail on DNS. `xcert --install` installs and enables them, and `xcert --status` says when the installed copies differ from the repository.
 
 ```bash
-cp /opt/xcert/etc/systemd/system/xcert* /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now xcert.timer
 systemctl start xcert.service      # one manual run
 journalctl -u xcert.service        # its output, always plain text
 ```
+
+`--list`, the menu and the SSH login status show the next run, "renewal running now" while the timer works, and a red line when the last timer run failed, so a failure shows up even without `notify_cmd`.
 
 ### Failure notifications
 
@@ -271,29 +267,11 @@ Use `--data-binary @-` with curl; plain `-d @-` drops the line breaks. Run `xcer
 
 ## Status at SSH login
 
-`etc/update-motd.d/99-cert-status` calls `xcert --motd` with a 5-second timeout, so a slow `openssl` or `systemctl` never blocks the login, and uses the same look as the CLI.
-
-```bash
-install -m 755 /opt/xcert/etc/update-motd.d/99-cert-status /etc/update-motd.d/
-```
-
-Debian and Ubuntu show it through `pam_motd` (`UsePAM yes` in `sshd_config`, the default). If the files were copied from Windows, strip the line endings first: `sed -i 's/\r$//' <file>`. Set `XCERT_ROOT` in the script, and `ExecStart` / `WorkingDirectory` in `xcert.service`, when xCert lives somewhere other than `/opt/xcert`.
+`etc/update-motd.d/99-cert-status` calls `xcert --motd` with a 5-second timeout, so a slow `openssl` or `systemctl` never blocks the login, and uses the same look as the CLI. `xcert --install` puts it into `/etc/update-motd.d/`; Debian and Ubuntu show it through `pam_motd` (`UsePAM yes` in `sshd_config`, the default).
 
 ## Log rotation
 
-```
-/opt/xcert/logs/xcert_*.log {
-    weekly
-    rotate 12
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 640 root adm
-}
-```
-
-Save as `/etc/logrotate.d/xcert`. Certbot rotates its own logs in `certbot_logs_dir`.
+`xcert --install` copies `etc/logrotate.d/xcert` into `/etc/logrotate.d/`: weekly, 12 compressed copies of `logs/xcert_*.log`. Certbot rotates its own logs in `certbot_logs_dir`.
 
 ## Security
 
@@ -308,4 +286,4 @@ Save as `/etc/logrotate.d/xcert`. Certbot rotates its own logs in `certbot_logs_
 python3 -m unittest discover -s tests
 ```
 
-The tests render every look in every colour mode and background, check the 80-column limit and the config save path. They never call Certbot or touch `/etc`.
+The tests render every look in every colour mode and background, check the 80-column limit and the config save path, and run `--install`, `--uninstall` and `--status` against a temporary directory. They never call Certbot or touch `/etc`.
