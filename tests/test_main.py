@@ -227,8 +227,17 @@ class Setup(unittest.TestCase):
         self.commands = []
         self.plugins = "* dns-cloudflare\n"
 
+        self.heads = ["abc1234\n", "abc1234\n"]  # HEAD before and after git pull
+        self.pull = (0, "Already up to date.", "")
+
         def fake_run(cmd, *args, **kwargs):
             self.commands.append(cmd)
+            if "rev-parse" in cmd:
+                return 0, self.heads.pop(0), ""
+            if "pull" in cmd:
+                return self.pull
+            if "--format=freeze" in cmd:
+                return 0, "acme==3.0.0\ncertbot==3.0.0\ncertbot-dns-ovh==3.0.0\n", ""
             return (0, self.plugins, "") if cmd[1:2] == ["plugins"] else (0, "certbot 3.0.0", "")
 
         for patch in (mock.patch.dict(main.SYSTEM_PATHS, paths), mock.patch.object(main, "is_root", return_value=True),
@@ -289,6 +298,46 @@ class Setup(unittest.TestCase):
         self.assertEqual(rows["openssl"][0], "err")
         self.assertEqual(rows["xcert.timer"][0], "err")
         self.assertEqual(rows["failure notices"][0], "warn")
+
+    def run_update(self):
+        checks = []
+        with self.which("certbot", "openssl"), mock.patch.object(main, "certbot_origin", return_value="venv"), \
+                mock.patch.object(main.os, "execv") as execv, mock.patch.dict(os.environ):
+            os.environ.pop(main.UPDATED_FROM_ENV, None)
+            ok = main.update(self.config_path, SETUP_LOG, checks)
+            restarted_from = os.environ.get(main.UPDATED_FROM_ENV)
+        return ok, checks, execv, restarted_from
+
+    def test_update_upgrades_certbot_and_its_plugins_then_installs(self):
+        ok, checks, execv, _ = self.run_update()
+        self.assertTrue(ok)
+        execv.assert_not_called()
+        pip = os.path.join(main.CERTBOT_VENV, "bin", "pip")
+        self.assertIn([pip, "install", "--upgrade", "certbot", "certbot-dns-ovh"], self.commands)
+        self.assertIn(["systemctl", "enable", "--now", "xcert.timer"], self.commands)
+        self.assertEqual(checks[0][1:], ("git pull", "already up to date"))
+
+    def test_update_restarts_with_pulled_code(self):
+        self.heads = ["abc1234\n", "def5678\n"]
+        _, _, execv, restarted_from = self.run_update()
+        execv.assert_called_once()
+        self.assertEqual(execv.call_args.args[1][1:3], [os.path.join(main.SCRIPT_DIR, "main.py"), *sys.argv[1:2]])
+        self.assertEqual(restarted_from, f"{main.VERSION} (abc1234)")
+
+    def test_restarted_update_skips_the_pull(self):
+        checks = []
+        with self.which("certbot", "openssl"), mock.patch.dict(os.environ, {main.UPDATED_FROM_ENV: "1.7.0 (abc1234)"}):
+            main.update(self.config_path, SETUP_LOG, checks)
+            self.assertNotIn(main.UPDATED_FROM_ENV, os.environ)  # a later --update pulls again
+        self.assertFalse(any("pull" in cmd for cmd in self.commands))
+        self.assertEqual(checks[0][2], f"1.7.0 (abc1234) -> {main.VERSION}")
+
+    def test_diverged_checkout_stops_before_touching_the_system(self):
+        self.pull = (128, "", "fatal: Not possible to fast-forward, aborting.")
+        ok, checks, _, _ = self.run_update()
+        self.assertFalse(ok)
+        self.assertIn("fast-forward", checks[-1][2])
+        self.assertFalse(any(cmd[0] == "systemctl" for cmd in self.commands))
 
     def test_uninstall_removes_only_what_install_wrote(self):
         with self.which("certbot", "openssl"):
