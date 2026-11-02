@@ -83,7 +83,7 @@ PL = {
     "list certificates": "lista certyfikatów",
     "save validity report": "zapisz raport ważności",
     "edit configuration": "edytuj konfigurację",
-    "check configuration and credentials": "sprawdź konfigurację i poświadczenia",
+    "check configuration and system": "sprawdź konfigurację i system",
     "change look and language": "zmień wygląd i język",
     "quit": "wyjdź",
     "Renew": "Odnów",
@@ -204,8 +204,14 @@ PL = {
     "Validate config.json and provider credentials": "Sprawdź config.json i poświadczenia dostawców",
     "Limit --validate-config to specific domain(s), can be repeated":
         "Ogranicz --validate-config do wybranych domen, można powtarzać",
-    "--validate-domain only works together with --validate-config":
-        "--validate-domain działa tylko razem z --validate-config",
+    "--validate-domain only works together with --validate-config or --status":
+        "--validate-domain działa tylko razem z --validate-config lub --status",
+    "Check config, certbot, DNS plugins, installed files and the timer":
+        "Sprawdź config, certbota, wtyczki DNS, zainstalowane pliki i timer",
+    "Install or update certbot, DNS plugins, the xcert command, systemd units, MOTD and logrotate (root)":
+        "Zainstaluj lub zaktualizuj certbota, wtyczki DNS, komendę xcert, unity systemd, MOTD i logrotate (root)",
+    "Remove what --install set up; keeps config, credentials, logs and certificates":
+        "Usuń to, co ustawił --install; config, poświadczenia, logi i certyfikaty zostają",
     "Path to config.json (default: {path})": "Ścieżka do config.json (domyślnie: {path})",
     "Print the short certificate status used at SSH login": "Wypisz krótki status certyfikatów pokazywany przy logowaniu SSH",
     "Look for this run: ledger, timeline or console": "Wygląd na to uruchomienie: ledger, timeline lub console",
@@ -214,6 +220,29 @@ PL = {
     "Language for this run: en or pl": "Język na to uruchomienie: en lub pl",
     "Send the failure notice through general.notify_cmd (used by xcert-notify.service)":
         "Wyślij powiadomienie o błędzie przez general.notify_cmd (używa go xcert-notify.service)",
+    # Status and install
+    "status": "status",
+    "install": "instalacja",
+    "uninstall": "deinstalacja",
+    "DNS plugins": "wtyczki DNS",
+    "none needed": "żadne niepotrzebne",
+    "system packages": "pakiety systemowe",
+    "nothing missing": "niczego nie brakuje",
+    "installed into {path}": "zainstalowany w {path}",
+    "permissions": "uprawnienia",
+    "secrets readable by root only": "sekrety czytelne tylko dla roota",
+    "xcert command": "komenda xcert",
+    "units, MOTD, logrotate": "unity, MOTD, logrotate",
+    "timer, units, MOTD, logrotate": "timer, unity, MOTD, logrotate",
+    "{n} files": "plików: {n}",
+    "{n} files removed": "usunięte pliki: {n}",
+    "installed and current": "zainstalowane i aktualne",
+    "removed": "usunięta",
+    "kept": "zostaje",
+    "config, secrets, logs and certificates in {path}": "config, sekrety, logi i certyfikaty w {path}",
+    "last timer run": "ostatni przebieg timera",
+    "no run yet": "jeszcze nie było",
+    "failure notices": "powiadomienia o błędach",
     # Failure notice
     "xCert: certificate renewal failed on {host}": "xCert: odnawianie certyfikatów nie powiodło się na {host}",
     "Last lines of the xcert.service journal:": "Ostatnie linie journala xcert.service:",

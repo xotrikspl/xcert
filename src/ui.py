@@ -805,13 +805,15 @@ def note_text(message: str) -> str:
 CHECK_MARKS = {"ok": "✓", "warn": "!", "err": "✗"}
 
 
-def render_check(p: Painter, ctx: Context, checks: Sequence[Tuple[str, str, str]], path: str) -> str:
-    """Outcome of --validate-config: one row per section, provider or setting, then the totals."""
+def render_check(p: Painter, ctx: Context, checks: Sequence[Tuple[str, str, str]], path: str,
+                 title: str = "") -> str:
+    """Outcome of --validate-config, --status or --install: one row per check, then the totals."""
+    title = title or t("checking")
     errors = sum(1 for lvl, _, _ in checks if lvl == "err")
     warnings = sum(1 for lvl, _, _ in checks if lvl == "warn")
     tags = {"ok": t("  OK  "), "warn": t(" WARN "), "err": t(" FAIL ")}
     if p.theme == "console":
-        out = [_bar(p, [("bar", f" xCert {ctx.version} ", True), ("bar", f" {t('checking')} ", False), None,
+        out = [_bar(p, [("bar", f" xCert {ctx.version} ", True), ("bar", f" {title} ", False), None,
                         ("bar", f" {clip(path, 40)} ", False)])]
         for lvl, label, detail in checks:
             line = " " + _tag(p, lvl, tags[lvl]) + " " + label
@@ -825,10 +827,10 @@ def render_check(p: Painter, ctx: Context, checks: Sequence[Tuple[str, str, str]
         return "\n".join(out + [_bar(p, segs)])
 
     if p.theme == "timeline":
-        out = _head(p, ctx, t("checking")) + ["", p.fg("accent", "config.json", bold=True) + " " + p.dim(clip(path, 60))]
+        out = _head(p, ctx, title) + ["", p.fg("accent", "config.json", bold=True) + " " + p.dim(clip(path, 60))]
         lead = [p.dim("└─" if i == len(checks) - 1 else "├─") for i in range(len(checks))]
     else:
-        out = _head(p, ctx, t("checking"))
+        out = _head(p, ctx, title)
         lead = [" "] * len(checks)
     width = min(38, max((len(label) for _, label, _ in checks), default=0))
     for (lvl, label, detail), branch in zip(checks, lead):

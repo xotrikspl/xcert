@@ -5,6 +5,7 @@ import os
 import random
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -520,6 +521,19 @@ def recording(logger: logging.Logger, quiet: bool = False):
             h.setLevel(lvl)
 
 
+def row_writer(rec: Recorder, checks: List[Tuple[str, str, str]]):
+    """section(label, detail) adds one screen row from what was logged since the previous row."""
+    mark = len(rec.records)
+
+    def section(label: str, detail: str = "") -> None:
+        nonlocal mark
+        new = rec.records[mark:]
+        mark = len(rec.records)
+        lvl = "err" if any(r.levelno >= logging.ERROR for r in new) else "warn" if new else "ok"
+        checks.append((lvl, label, new[-1].getMessage() if new else detail))
+    return section
+
+
 def screen_mode(args: Optional[argparse.Namespace] = None) -> bool:
     """Themed check and renewal screens replace console logs on a terminal, unless --debug asks for logs."""
     return sys.stdout.isatty() and not getattr(args, "debug", False)
@@ -539,15 +553,7 @@ def validate_config(
 def _validate(config: Dict, logger: logging.Logger, domain_filters: Optional[List[str]],
               rec: Recorder, checks: List[Tuple[str, str, str]]) -> bool:
     valid = True
-    mark = 0
-
-    def section(label: str, detail: str = "") -> None:
-        """One screen row from what was logged since the previous row."""
-        nonlocal mark
-        new = rec.records[mark:]
-        mark = len(rec.records)
-        lvl = "err" if any(r.levelno >= logging.ERROR for r in new) else "warn" if new else "ok"
-        checks.append((lvl, label, new[-1].getMessage() if new else detail))
+    section = row_writer(rec, checks)
 
     if "domains" not in config or "providers" not in config or "general" not in config:
         logger.error("Missing required sections: 'domains', 'providers', or 'general'")
@@ -653,13 +659,22 @@ def _validate(config: Dict, logger: logging.Logger, domain_filters: Optional[Lis
     return valid
 
 
+def check_all(config: Dict, logger: logging.Logger, domain_filters: Optional[List[str]] = None,
+              checks: Optional[List[Tuple[str, str, str]]] = None, system: bool = False) -> bool:
+    """--validate-config, plus with `system` what --status adds: certbot, plugins, units and the timer."""
+    checks = checks if checks is not None else []
+    ok = validate_config(config, logger, domain_filters, checks)
+    return (system_status(config, logger, checks) if system else True) and ok
+
+
 def show_check(painter: ui.Painter, config: Dict, logger: logging.Logger, path: str,
-               domain_filters: Optional[List[str]] = None) -> bool:
+               domain_filters: Optional[List[str]] = None, system: bool = False) -> bool:
     """Runs the check with console logs hidden and draws its outcome in the current look."""
     checks: List[Tuple[str, str, str]] = []
     with recording(logger, quiet=True):
-        ok = validate_config(config, logger, domain_filters, checks)
-    ui.draw(ui.render_check(painter, build_ui_context(config), checks, path))
+        ok = check_all(config, logger, domain_filters, checks, system)
+    ui.draw(ui.render_check(painter, build_ui_context(config), checks, path,
+                            t("status") if system else t("checking")))
     return ok
 
 
@@ -823,6 +838,299 @@ def build_ui_context(config: Dict) -> ui.Context:
         last_ok=auto["last_ok"],
         running=auto["running"],
     )
+
+
+# ======================
+# INSTALL AND STATUS
+# ======================
+CERTBOT_VENV = "/opt/certbot"
+# Where --install puts things; tests point these at a temporary directory.
+SYSTEM_PATHS = {
+    "units": "/etc/systemd/system",
+    "motd": "/etc/update-motd.d/99-cert-status",
+    "logrotate": "/etc/logrotate.d/xcert",
+    "xcert": "/usr/local/bin/xcert",
+    "certbot": "/usr/bin/certbot",
+}
+UNITS = ("xcert.service", "xcert.timer", "xcert-notify.service")
+XCERT_BIN = os.path.join(XCERT_ROOT, "bin", "xcert")
+
+
+def is_root() -> bool:
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def shipped_files() -> List[Tuple[str, str, int]]:
+    """(file in the repo, where --install puts it, mode) for the units, the MOTD script and logrotate."""
+    files = [(os.path.join(XCERT_ROOT, "etc", "systemd", "system", u), os.path.join(SYSTEM_PATHS["units"], u), 0o644)
+             for u in UNITS]
+    return files + [(os.path.join(XCERT_ROOT, "etc", "update-motd.d", "99-cert-status"), SYSTEM_PATHS["motd"], 0o755),
+                    (os.path.join(XCERT_ROOT, "etc", "logrotate.d", "xcert"), SYSTEM_PATHS["logrotate"], 0o644)]
+
+
+def rendered(source: str) -> str:
+    """A shipped file pointed at this checkout instead of /opt/xcert, with Windows line endings dropped."""
+    with open(source, encoding="utf-8") as f:
+        return f.read().replace("\r\n", "\n").replace("/opt/xcert", XCERT_ROOT)
+
+
+def is_current(source: str, target: str) -> Optional[bool]:
+    """None when `target` is missing, False when it differs from what --install would write."""
+    try:
+        with open(target, encoding="utf-8") as f:
+            return f.read() == rendered(source)
+    except OSError:
+        return None
+
+
+def needed_plugins(config: Dict) -> List[str]:
+    """Certbot plugins of the providers domains use, plus the default provider."""
+    general = config.get("general", {})
+    default = general.get("default_provider", "ovh")
+    used = {d.get("provider", default) for d in config.get("domains", [])}
+    if general.get("default_provider"):
+        used.add(default)
+    providers = config.get("providers", {})
+    return sorted({providers[n].get("certbot_plugin_name", f"dns-{n}") for n in used if n in providers})
+
+
+def certbot_origin(path: str) -> str:
+    """How certbot got here: 'snap', 'venv' (pip into CERTBOT_VENV) or 'system' (apt and others)."""
+    real = os.path.realpath(path)
+    if path.startswith("/snap/") or os.path.basename(real) == "snap":
+        return "snap"
+    return "venv" if real.startswith(CERTBOT_VENV + "/") else "system"
+
+
+def certbot_plugins(path: str, general: Dict) -> Tuple[Optional[set], str]:
+    """Plugin names certbot reports, or None and the reason when it cannot be asked."""
+    rc, out, err = run_command([path, "plugins",
+                                "--config-dir", general_path(general, "certbot_config_dir", "/etc/letsencrypt"),
+                                "--work-dir", general_path(general, "certbot_work_dir", "/var/lib/letsencrypt"),
+                                "--logs-dir", general_path(general, "certbot_logs_dir", "/var/log/letsencrypt")],
+                               timeout=120)
+    if rc != 0:
+        return None, ((err or out).strip().splitlines() or [f"rc={rc}"])[-1]
+    return set(re.findall(r"^\* (\S+)", out, re.M)), ""
+
+
+def run_step(cmd: List[str], logger: logging.Logger, timeout: int = 900) -> bool:
+    """One install command; its output goes to the debug log, a failure logs the last line."""
+    logger.debug(f"Running: {' '.join(cmd)}")
+    rc, out, err = run_command(cmd, timeout=timeout)
+    if rc != 0:
+        last = ((err or out).strip().splitlines() or [""])[-1]
+        logger.error(f"{' '.join(cmd)} failed (rc={rc}): {last}")
+    return rc == 0
+
+
+def install_certbot(config: Dict, logger: logging.Logger, section) -> None:
+    """openssl, certbot and the DNS plugins of the providers in use, picked by how certbot was installed."""
+    plugins = needed_plugins(config)
+    packages = [f"certbot-{p}" for p in plugins]
+    certbot = shutil.which("certbot")
+    apt = ["openssl"] if not shutil.which("openssl") else []
+    apt += ["python3-venv"] if not certbot else []
+    if apt:
+        if shutil.which("apt-get"):
+            run_step(["apt-get", "update"], logger)
+            run_step(["apt-get", "install", "-y", *apt], logger)
+        else:
+            logger.error(f"Install with your package manager: {' '.join(apt)}")
+    section(t("system packages"), ", ".join(apt) or t("nothing missing"))
+
+    if not certbot:
+        pip = os.path.join(CERTBOT_VENV, "bin", "pip")
+        if (run_step([sys.executable, "-m", "venv", CERTBOT_VENV], logger)
+                and run_step([pip, "install", "--upgrade", "pip"], logger)
+                and run_step([pip, "install", "certbot", *packages], logger)):
+            if os.path.lexists(SYSTEM_PATHS["certbot"]):
+                os.remove(SYSTEM_PATHS["certbot"])
+            os.symlink(os.path.join(CERTBOT_VENV, "bin", "certbot"), SYSTEM_PATHS["certbot"])
+            logger.info(f"Installed certbot and {', '.join(packages) or 'no plugins'} into {CERTBOT_VENV}")
+        section("certbot", t("installed into {path}", path=CERTBOT_VENV))
+        return
+    section("certbot", certbot)
+
+    installed, _ = certbot_plugins(certbot, config.get("general", {}))
+    missing = [p for p in plugins if installed is None or p not in installed]
+    origin = certbot_origin(certbot)
+    if missing and origin == "venv":
+        run_step([os.path.join(CERTBOT_VENV, "bin", "pip"), "install", *[f"certbot-{p}" for p in missing]], logger)
+    elif missing and origin == "snap":
+        run_step(["snap", "set", "certbot", "trust-plugin-with-root=ok"], logger)
+        for p in missing:
+            if run_step(["snap", "install", f"certbot-{p}"], logger):
+                # Store plugins usually connect on their own; connecting again only fails harmlessly.
+                run_command(["snap", "connect", "certbot:plugin", f"certbot-{p}"], timeout=120)
+    elif missing:
+        logger.warning(f"certbot comes from the system packages, install the plugins the same way: "
+                       f"apt install {' '.join('python3-certbot-' + p for p in missing)}")
+    section(t("DNS plugins"), ", ".join(plugins) or t("none needed"))
+
+
+def install(config_path: str, logger: logging.Logger, checks: List[Tuple[str, str, str]]) -> bool:
+    """Sets up everything around xCert; safe to run again, e.g. after git pull."""
+    with recording(logger) as rec:
+        section = row_writer(rec, checks)
+        if not is_root():
+            logger.error("Run --install as root: it writes to /etc and installs packages")
+            section(t("permissions"))
+            return False
+
+        example = os.path.join(XCERT_ROOT, "config", "config.json.example")
+        if not os.path.isfile(config_path):
+            shutil.copyfile(example, config_path)
+            os.chmod(config_path, 0o600)
+            logger.warning(f"Created {config_path} from the example: add your domains with xcert --edit-config")
+        section("config.json", config_path)
+
+        for name, mode in (("secrets", 0o700), ("logs", 0o755)):
+            path = os.path.join(XCERT_ROOT, name)
+            os.makedirs(path, exist_ok=True)
+            os.chmod(path, mode)
+        for name in os.listdir(os.path.join(XCERT_ROOT, "secrets")):
+            os.chmod(os.path.join(XCERT_ROOT, "secrets", name), 0o600)
+        section("secrets/, logs/", t("secrets readable by root only"))
+
+        os.chmod(XCERT_BIN, 0o755)
+        if os.path.lexists(SYSTEM_PATHS["xcert"]):
+            os.remove(SYSTEM_PATHS["xcert"])
+        os.symlink(XCERT_BIN, SYSTEM_PATHS["xcert"])
+        section(t("xcert command"), SYSTEM_PATHS["xcert"])
+
+        try:
+            config = load_config(config_path=config_path)
+        except Exception as e:
+            logger.error(f"Cannot read {config_path}: {e}")
+            config = {}
+        install_certbot(config, logger, section)
+
+        for source, target, mode in shipped_files():
+            try:
+                os.makedirs(os.path.dirname(target), exist_ok=True)  # minimal systems lack update-motd.d
+                with open(target, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(rendered(source))
+                os.chmod(target, mode)
+            except OSError as e:
+                logger.error(f"Cannot write {target}: {e}")
+        section(t("units, MOTD, logrotate"), t("{n} files", n=len(shipped_files())))
+
+        if run_step(["systemctl", "daemon-reload"], logger, 60):
+            run_step(["systemctl", "enable", "--now", "xcert.timer"], logger, 60)
+        section("xcert.timer", t("enabled"))
+        return not any(lvl == "err" for lvl, _, _ in checks)
+
+
+def uninstall(logger: logging.Logger, checks: List[Tuple[str, str, str]]) -> bool:
+    """Undoes --install except config, credentials, logs, certificates and certbot itself."""
+    with recording(logger) as rec:
+        section = row_writer(rec, checks)
+        if not is_root():
+            logger.error("Run --uninstall as root: it removes files from /etc")
+            section(t("permissions"))
+            return False
+        run_command(["systemctl", "disable", "--now", "xcert.timer"], timeout=60)  # fails harmlessly when absent
+        removed = [target for _, target, _ in shipped_files() if os.path.lexists(target)]
+        for target in removed:
+            os.remove(target)
+        run_step(["systemctl", "daemon-reload"], logger, 60)
+        section(t("timer, units, MOTD, logrotate"), t("{n} files removed", n=len(removed)))
+        link = SYSTEM_PATHS["xcert"]
+        if os.path.islink(link) and os.path.realpath(link) == os.path.realpath(XCERT_BIN):
+            os.remove(link)
+        section(t("xcert command"), t("removed"))
+        checks.append(("ok", t("kept"), t("config, secrets, logs and certificates in {path}", path=XCERT_ROOT)))
+        return not any(lvl == "err" for lvl, _, _ in checks)
+
+
+def system_status(config: Dict, logger: logging.Logger, checks: List[Tuple[str, str, str]]) -> bool:
+    """What --status adds to the config check: tools, plugins, installed files and what the timer did."""
+    general = config.get("general", {})
+    with recording(logger) as rec:
+        section = row_writer(rec, checks)
+        certbot = shutil.which("certbot")
+        if not certbot:
+            logger.error("certbot not found: xcert --install")
+            section("certbot")
+        else:
+            rc, out, err = run_command([certbot, "--version"], timeout=60)
+            section("certbot", f"{(out or err).strip()} ({certbot_origin(certbot)})")
+            installed, why = certbot_plugins(certbot, general)
+            missing = [p for p in needed_plugins(config) if installed is not None and p not in installed]
+            if installed is None:
+                logger.warning(f"Could not list certbot plugins: {why}")
+            elif missing:
+                logger.error(f"Missing plugins {', '.join(missing)}: xcert --install")
+            section(t("DNS plugins"), ", ".join(needed_plugins(config)) or t("none needed"))
+
+        if not shutil.which("openssl"):
+            logger.error("openssl not found: xcert --install")
+        section("openssl", shutil.which("openssl") or "")
+
+        found = shutil.which("xcert")
+        if not found or os.path.realpath(found) != os.path.realpath(XCERT_BIN):
+            logger.warning(f"xcert is not linked to {XCERT_BIN}: xcert --install")
+        section(t("xcert command"), found or "")
+
+        missing, stale = [], []
+        for source, target, _ in shipped_files():
+            current = is_current(source, target)
+            if current is None and not (target == SYSTEM_PATHS["logrotate"] and general.get("logs", 1) != 1):
+                missing.append(os.path.basename(target))
+            elif current is False:
+                stale.append(os.path.basename(target))
+        if stale:
+            logger.warning(f"Outdated {', '.join(stale)}: xcert --install")
+        if missing:
+            logger.error(f"Missing {', '.join(missing)}: xcert --install")
+        section(t("units, MOTD, logrotate"), t("installed and current"))
+
+        auto = automation()
+        if not auto["loaded"]:
+            logger.error("Timer missing: xcert --install")
+        elif not (auto["enabled"] and auto["active"]):
+            logger.error("Timer off: systemctl enable --now xcert.timer")
+        section("xcert.timer", auto["next_run"] and t("next run {when}", when=f"{auto['next_run']:%d.%m %H:%M}") or "")
+
+        if auto["running"]:
+            last = t("renewal running now")
+        elif auto["last_run"] is None:
+            last = t("no run yet")
+        else:
+            last = f"{auto['last_run']:%d.%m %H:%M}"
+            if not auto["last_ok"]:
+                journal = [line for line in journal_tail(20).splitlines() if line.strip()]
+                logger.error(f"Last run {last} failed: {journal[-1] if journal else 'journalctl -u xcert.service'}")
+        section(t("last timer run"), last)
+
+        if not general.get("notify_cmd"):
+            logger.warning("notify_cmd empty: no failure notices")
+        section(t("failure notices"), general.get("notify_cmd") or "")
+        return not any(r.levelno >= logging.ERROR for r in rec.records)
+
+
+def run_setup(args: argparse.Namespace, logger: logging.Logger) -> bool:
+    """--install or --uninstall, drawn as one checklist; --install ends with the full --status."""
+    config_path = resolve_project_path(args.config)
+    checks: List[Tuple[str, str, str]] = []
+    config: Dict = {}
+    with recording(logger, quiet=screen_mode(args)):
+        if args.uninstall:
+            ok = uninstall(logger, checks)
+        else:
+            ok = install(config_path, logger, checks)
+            try:
+                config = load_config(config_path=config_path)
+            except Exception:
+                pass
+            if ok and config:
+                ok = check_all(config, logger, None, checks, system=True)
+    if screen_mode(args):
+        ui.fit_screen()
+        ui.draw(ui.render_check(make_painter(effective_appearance(config, args)), build_ui_context(config), checks,
+                                config_path, t("uninstall") if args.uninstall else t("install")))
+    return ok
 
 
 def effective_appearance(config: Dict, args: Optional[argparse.Namespace] = None) -> Dict[str, str]:
@@ -1115,7 +1423,7 @@ MENU_ITEMS = [
     ("l", "list certificates", "List"),
     ("r", "save validity report", "Report"),
     ("e", "edit configuration", "Edit"),
-    ("s", "check configuration and credentials", "Check"),
+    ("s", "check configuration and system", "Check"),
     ("t", "change look and language", "Look"),
     ("q", "quit", "Quit"),
 ]
@@ -1177,7 +1485,7 @@ def interactive_menu(config: Dict, logger: logging.Logger, config_path: str,
                 ui.pause(painter)
             continue
         elif key == "s":
-            show_check(painter, config, logger, config_path)
+            show_check(painter, config, logger, config_path, system=True)
         elif key == "t":
             pick_appearance(config_path, appearance, logger, ctx.states)
             continue
@@ -1231,20 +1539,31 @@ def main() -> None:
     parser.add_argument("--colors", choices=ui.COLOR_MODES, help=t("Colours for this run: auto, full (24-bit), 16 or none"))
     parser.add_argument("--background", choices=ui.BACKGROUNDS, help=t("Palette for a dark or light terminal"))
     parser.add_argument("--lang", choices=i18n.LANGUAGES, help=t("Language for this run: en or pl"))
+    parser.add_argument("--status", action="store_true",
+                        help=t("Check config, certbot, DNS plugins, installed files and the timer"))
+    parser.add_argument("--install", action="store_true",
+                        help=t("Install or update certbot, DNS plugins, the xcert command, systemd units, MOTD "
+                               "and logrotate (root)"))
+    parser.add_argument("--uninstall", action="store_true",
+                        help=t("Remove what --install set up; keeps config, credentials, logs and certificates"))
     parser.add_argument("--notify-failure", action="store_true",
                         help=t("Send the failure notice through general.notify_cmd (used by xcert-notify.service)"))
 
     args = parser.parse_args()
-    if args.validate_domain and not args.validate_config:
-        parser.error(t("--validate-domain only works together with --validate-config"))
+    if args.validate_domain and not (args.validate_config or args.status):
+        parser.error(t("--validate-domain only works together with --validate-config or --status"))
 
     logger = setup_logger(debug=args.debug)
+
+    if args.install or args.uninstall:
+        sys.exit(0 if run_setup(args, logger) else 1)
 
     try:
         config_path = resolve_project_path(args.config)
         config = load_config(config_path=config_path)
     except Exception as e:
         logger.critical(f"❌ Failed to load config.json: {e}")
+        logger.critical("First run on this server? Set everything up with: xcert --install")
         sys.exit(1)
 
     if args.dry_run:
@@ -1261,6 +1580,14 @@ def main() -> None:
             sys.exit(1)
 
     appearance = effective_appearance(config, args)
+
+    actions = ("auto", "report", "list", "menu", "edit_config", "validate_config", "status", "motd",
+               "notify_failure", "domain", "email")
+    if not any(getattr(args, a) for a in actions):
+        if not ui.interactive():
+            parser.print_help()
+            return
+        args.menu = True  # plain `xcert` on a terminal opens the menu
 
     if args.notify_failure:
         sys.exit(0 if send_failure_notice(config, logger) else 1)
@@ -1294,11 +1621,11 @@ def main() -> None:
         print(ui.render_list(painter, build_ui_context(config), collect_cert_states(config)))
         return
 
-    if args.validate_config:
+    if args.validate_config or args.status:
         if screen_mode(args):
-            ok = show_check(make_painter(appearance), config, logger, config_path, args.validate_domain)
+            ok = show_check(make_painter(appearance), config, logger, config_path, args.validate_domain, args.status)
         else:
-            ok = validate_config(config, logger, args.validate_domain)
+            ok = check_all(config, logger, args.validate_domain, system=args.status)
         sys.exit(0 if ok else 1)
 
     if args.auto:
@@ -1326,8 +1653,6 @@ def main() -> None:
         success = issue_one(config, domain_entry, logger, dry_run=args.dry_run, painter=make_painter(appearance),
                             live=screen_mode(args))
         sys.exit(0 if success else 1)
-
-    parser.print_help()
 
 
 if __name__ == "__main__":
