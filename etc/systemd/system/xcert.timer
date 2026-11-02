@@ -4,6 +4,8 @@ Description=Run xCert weekly
 [Timer]
 OnCalendar=Mon *-*-* 01:00:00
 Persistent=true
+# Let's Encrypt asks clients not to pile up on the full hour.
+RandomizedDelaySec=1h
 
 [Install]
 WantedBy=timers.target

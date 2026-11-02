@@ -2,6 +2,7 @@
 Description=xCert SSL certificate renewal
 Wants=network-online.target
 After=network-online.target
+OnFailure=xcert-notify.service
 
 [Service]
 Type=oneshot

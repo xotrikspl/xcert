@@ -1,0 +1,8 @@
+[Unit]
+Description=xCert failure notification
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /opt/xcert/src/main.py --notify-failure
+WorkingDirectory=/opt/xcert
