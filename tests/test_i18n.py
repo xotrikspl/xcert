@@ -61,9 +61,10 @@ class TranslationTest(unittest.TestCase):
             self.assertEqual(len(i18n.PL[tag]), len(tag), tag)
 
     def test_menu_shortcuts_fit_function_key_bar(self):
-        width = ui.WIDTH // len(main.MENU_ITEMS) - 2
-        for _, _, short in main.MENU_ITEMS:
-            self.assertLessEqual(len(i18n.PL[short]), width, short)
+        for items in (main.MENU_ITEMS, main.EDITOR_ITEMS):
+            width = ui.WIDTH // len(items) - 3  # key, cursor marker and a gap before the next key
+            for _, _, short in items:
+                self.assertLessEqual(max(len(short), len(i18n.PL[short])), width, short)
 
     def test_unknown_language_falls_back_to_english(self):
         i18n.set_language("de")

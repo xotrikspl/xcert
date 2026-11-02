@@ -308,6 +308,14 @@ class EditorTest(unittest.TestCase):
             main.edit_config_interactive(path, QUIET, dict(ui.DEFAULT_APPEARANCE))
         return json_loader.load_config(config_path=path)
 
+    def test_notify_cmd_is_set_checked_and_cleared(self):
+        cmd = "curl -fsS --data-binary @- https://ntfy.sh/xcert"
+        saved = self.run_editor(["a", "mail -s 'open", "a", cmd, "s"])  # unclosed quote is rejected
+        self.assertEqual(saved["general"]["notify_cmd"], cmd)
+        self.assertNotIn("post_renewal_cmd", saved["general"])  # the other command stays untouched
+        cleared = self.run_editor(["a", "-", "s"], saved)
+        self.assertEqual(cleared["general"]["notify_cmd"], "")
+
     def test_add_remove_and_command_without_typing_numbers(self):
         saved = self.run_editor(["n", "b.pl", "", "2",  # add b.pl, keep the email, pick cloudflare
                                  "1", "u", "t",          # cursor on a.pl, remove it
