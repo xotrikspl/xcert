@@ -36,9 +36,6 @@ RATE_LIMIT_SIGNATURES: Dict[str, List[str]] = {
     ],
     "cloudflare": [
         "error 971",
-        "cloudflare",
-        "unable to determine zone_id",
-        "please wait",
     ],
     "ovh": [
         "http 429",
@@ -62,6 +59,8 @@ class Colors:
     BRIGHT_RED = "\033[91m"
     BRIGHT_YELLOW = "\033[93m"
 
+COLOR_CODES = {name: code for name, code in vars(Colors).items() if name.isupper()}
+
 # ======================
 # PATH RESOLUTION
 # ======================
@@ -82,16 +81,22 @@ def general_path(general_config: Dict, key: str, default: str) -> str:
 # VALIDATION
 # ======================
 def is_valid_email(email: str) -> bool:
-    return re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email) is not None
+    return re.fullmatch(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", email or "") is not None
+
+
+DOMAIN_RE = re.compile(r"(?:(?!-)[A-Za-z0-9-]{1,63}(?<!-)\.)+[A-Za-z]{2,63}")
+
+
+def cert_name(domain: str) -> str:
+    """Certbot lineage name for a domain: the domain without a leading wildcard label."""
+    return domain[2:] if domain.startswith("*.") else domain
 
 
 def is_valid_domain(domain: str) -> bool:
     """Validates a domain name (supports: example.com, *.example.com)."""
     if not domain or len(domain) > 253:
         return False
-    clean = domain.replace("*.", "")
-    pattern = r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)(\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,}$"
-    return re.match(pattern, clean) is not None
+    return DOMAIN_RE.fullmatch(cert_name(domain)) is not None
 
 # ======================
 # LOGGING
@@ -149,10 +154,9 @@ def get_cert_days_left(cert_path: str) -> Optional[int]:
 
 def cert_days_left(domain: str, general_config: Dict) -> Optional[int]:
     """Returns days until certificate expiry using the configured certbot_config_dir."""
-    clean_domain = domain.replace("*.", "")
     cert_path = os.path.join(
         general_path(general_config, "certbot_config_dir", "/etc/letsencrypt"),
-        "live", clean_domain, "cert.pem",
+        "live", cert_name(domain), "cert.pem",
     )
     return get_cert_days_left(cert_path)
 
@@ -190,10 +194,13 @@ def run_command(
                     if not result.stderr.endswith("\n"):
                         err.write("\n")
 
-        if logger and result.stdout:
-            logger.debug(f"STDOUT: {result.stdout}")
-        if logger and result.stderr:
-            logger.debug(f"STDERR: {result.stderr}")
+        if logger:
+            # With file logs the output is already saved; otherwise show it.
+            emit = logger.debug if use_logs else logger.info
+            if result.stdout:
+                emit(f"STDOUT: {result.stdout.rstrip()}")
+            if result.stderr:
+                emit(f"STDERR: {result.stderr.rstrip()}")
 
         return result.returncode, result.stdout, result.stderr
     except subprocess.TimeoutExpired as e:
@@ -229,7 +236,7 @@ def validate_provider_runtime(provider_name: str, provider: Dict, logger: loggin
             if mode & 0o077:
                 logger.warning(
                     f"Insecure permissions on {cred_path}: {oct(mode)} "
-                    f"(recommended: 0o600 — fix: chmod 600 {cred_path})"
+                    f"(recommended: 0o600, fix: chmod 600 {cred_path})"
                 )
 
     return True
@@ -243,12 +250,12 @@ def build_cert_tasks(domains_list: List[Dict], default_provider: str) -> List[Di
     order: List = []
 
     def base_domain(value: str) -> str:
-        clean = value.replace("*.", "")
+        clean = cert_name(value)
         return clean[4:] if clean.startswith("www.") else clean
 
     for entry in domains_list:
-        domain = entry["domain"]
-        email = entry["email"]
+        domain = entry.get("domain", "")
+        email = entry.get("email", "")
         provider = entry.get("provider", default_provider)
         key = (email, provider, base_domain(domain))
 
@@ -260,6 +267,11 @@ def build_cert_tasks(domains_list: List[Dict], default_provider: str) -> List[Di
             grouped[key]["domains"].append(domain)
 
     return [grouped[key] for key in order]
+
+def shared_cert_names(tasks: List[Dict]) -> set:
+    """Certificate names claimed by more than one task (same base domain, different email or provider)."""
+    names = [cert_name(task["domains"][0]) for task in tasks]
+    return {name for name in names if names.count(name) > 1}
 
 # ======================
 # MULTI-DOMAIN CERTIFICATION
@@ -284,16 +296,15 @@ def cert_for_domains(
         logger.error(f"Invalid email for {domain_label}: {email}")
         return False
 
+    name = cert_name(domains[0])
+    days_left = cert_days_left(domains[0], general_config)
     renew_threshold_days = int(general_config.get("renew_threshold_days", 30))
-    if renew_threshold_days > 0:
-        primary = domains[0]
-        days_left = cert_days_left(primary, general_config)
-        if days_left is not None and days_left > renew_threshold_days:
-            logger.info(
-                f"⏭️  Skipped {domain_label}: certificate valid for {days_left} more days "
-                f"(threshold: {renew_threshold_days})"
-            )
-            return True
+    if renew_threshold_days > 0 and days_left is not None and days_left > renew_threshold_days:
+        logger.info(
+            f"⏭️  Skipped {domain_label}: certificate valid for {days_left} more days "
+            f"(threshold: {renew_threshold_days})"
+        )
+        return True
 
     if provider_name not in providers_config:
         logger.error(f"Unknown provider '{provider_name}' for: {domain_label}")
@@ -305,23 +316,33 @@ def cert_for_domains(
 
     cmd_template = provider["cmd_template"]
     credentials = provider.get("credentials_path")
-
     if credentials:
-        full_cmd_str = cmd_template.format(credentials=resolve_project_path(credentials))
-    else:
-        full_cmd_str = cmd_template
+        cmd_template = cmd_template.format(credentials=shlex.quote(resolve_project_path(credentials)))
+    try:
+        full_cmd = shlex.split(cmd_template)
+        post_cmd = shlex.split(general_config.get("post_renewal_cmd") or "")
+    except ValueError as e:
+        logger.error(f"❌ Cannot parse cmd_template or post_renewal_cmd for {domain_label}: {e}")
+        return False
 
-    full_cmd = shlex.split(full_cmd_str) + ["--email", email]
+    # Pin the lineage xCert reads back from live/<name>/, so a changed domain list updates
+    # that certificate instead of creating a stray <name>-0001 copy.
+    full_cmd += ["--email", email, "--cert-name", name]
     for domain in domains:
         full_cmd += ["-d", domain]
+    if days_left is not None:
+        # xCert's threshold already decided the certificate is due. Without this Certbot keeps it
+        # until its own 30-day window opens and still exits 0.
+        full_cmd += ["--force-renewal", "--renew-with-new-domains"]
 
     full_cmd += [
         "--config-dir", general_path(general_config, "certbot_config_dir", "/etc/letsencrypt"),
-        "--work-dir",   general_path(general_config, "certbot_work_dir",   "/var/lib/letsencrypt"),
-        "--logs-dir",   general_path(general_config, "certbot_logs_dir",   "/var/log/letsencrypt"),
+        "--work-dir", general_path(general_config, "certbot_work_dir", "/var/lib/letsencrypt"),
+        "--logs-dir", general_path(general_config, "certbot_logs_dir", "/var/log/letsencrypt"),
     ]
 
-    if dry_run or int(general_config.get("dry_run", 0)) == 1:
+    dry = dry_run or int(general_config.get("dry_run", 0)) == 1
+    if dry:
         full_cmd += ["--dry-run"]
 
     plugin_flag_name = provider.get("certbot_plugin_name", f"dns-{provider_name}")
@@ -334,14 +355,14 @@ def cert_for_domains(
     jitter_max = int(general_config.get("backoff_jitter_seconds", 15))
     command_timeout = int(general_config.get("command_timeout_seconds", 900))
 
-    use_logs = general_config.get("logs") == 1
+    use_logs = general_config.get("logs", 1) == 1
     output_file = general_path(general_config, "output", "logs/xcert_output.log") if use_logs else None
     error_file = general_path(general_config, "error", "logs/xcert_error.log") if use_logs else None
 
     for attempt in range(1, max_retries + 1):
         logger.info(
             f"Certbot: {domain_label} (provider: {provider_name}"
-            f"{' [DRY-RUN]' if dry_run else ''}) [attempt {attempt}/{max_retries}]"
+            f"{' [DRY-RUN]' if dry else ''}) [attempt {attempt}/{max_retries}]"
         )
 
         rc, out, err = run_command(
@@ -352,17 +373,18 @@ def cert_for_domains(
             logger,
             command_timeout,
         )
+        combined = (out + "\n" + err).lower()
 
         if rc == 0:
+            if "not yet due for renewal" in combined:
+                logger.info(f"⏭️  Certbot kept the existing certificate for {domain_label} (not yet due)")
+                return True
             logger.info(f"✅ Success: {domain_label}")
-            post_cmd = general_config.get("post_renewal_cmd", "").strip()
-            if post_cmd:
-                logger.info(f"Running post_renewal_cmd: {post_cmd}")
-                run_command(shlex.split(post_cmd), logger=logger, timeout=60)
-            return True
+            return run_post_renewal(post_cmd, domain_label, dry, logger)
 
-        combined = (out + "\n" + err).lower()
         if is_retryable_rate_limit(provider_name, combined):
+            if attempt == max_retries:
+                break
             jitter = random.randint(0, jitter_max) if jitter_max > 0 else 0
             sleep_s = (base_backoff * attempt) + jitter
             logger.warning(
@@ -375,8 +397,23 @@ def cert_for_domains(
         logger.error(f"❌ Failed: {domain_label} (rc={rc})")
         return False
 
-    logger.error(f"❌ Failed: {domain_label} — max retries exceeded (rate-limit?)")
+    logger.error(f"❌ Failed: {domain_label}, max retries exceeded (rate-limit?)")
     return False
+
+
+def run_post_renewal(post_cmd: List[str], domain_label: str, dry: bool, logger: logging.Logger) -> bool:
+    """Runs post_renewal_cmd after a renewal; a failed reload fails the certificate so systemd shows it."""
+    if not post_cmd:
+        return True
+    if dry:
+        logger.info(f"Dry run: skipping post_renewal_cmd: {' '.join(post_cmd)}")
+        return True
+    logger.info(f"Running post_renewal_cmd: {' '.join(post_cmd)}")
+    rc, _, _ = run_command(post_cmd, logger=logger, timeout=60)
+    if rc != 0:
+        logger.error(f"❌ Certificate renewed for {domain_label}, but post_renewal_cmd failed (rc={rc})")
+        return False
+    return True
 
 # ======================
 # SINGLE DOMAIN (thin wrapper)
@@ -420,8 +457,16 @@ def cert_auto(
     results: List[Tuple[str, bool]] = []
     timings: List[Tuple[float, float]] = []
     started = time.monotonic()
+    shared = shared_cert_names(tasks)
     for idx, task in enumerate(tasks):
         task_start = time.monotonic()
+        if cert_name(task["domains"][0]) in shared:
+            # Two groups writing one lineage would swap its domain list on every run.
+            logger.error(f"❌ Skipped {', '.join(task['domains'])}: certificate name "
+                         f"'{cert_name(task['domains'][0])}' is shared with another group")
+            results.append((", ".join(task["domains"]), False))
+            timings.append((task_start - started, 0.0))
+            continue
         success = cert_for_domains(
             task["domains"],
             task["email"],
@@ -511,6 +556,17 @@ def validate_config(
             logger.error(f"Unknown provider '{provider_name}' for domain {domain}")
             valid = False
 
+    for name in sorted(shared_cert_names(build_cert_tasks(selected_domains, default_provider))):
+        logger.error(f"Certificate name '{name}' is used by more than one group: "
+                     f"give these domains the same email and provider")
+        valid = False
+
+    try:
+        shlex.split(general.get("post_renewal_cmd") or "")
+    except ValueError as e:
+        logger.error(f"general.post_renewal_cmd cannot be parsed: {e}")
+        valid = False
+
     language = general.get("language")
     if language is not None and language not in i18n.LANGUAGES:
         logger.error(f"general.language = '{language}' is not one of: {', '.join(i18n.LANGUAGES)}")
@@ -552,7 +608,7 @@ def prompt_domain_filters(config: Dict, logger: logging.Logger) -> List[str]:
 # CERTIFICATE VALIDITY REPORT
 # ======================
 def generate_cert_report(config: Dict, logger: logging.Logger) -> str:
-    domains_list = config.get("domains", [])
+    """Writes the JSON validity report, one entry per configured domain."""
     general = config.get("general", {})
     certbot_config_dir = general_path(general, "certbot_config_dir", "/etc/letsencrypt")
     report = {
@@ -560,36 +616,26 @@ def generate_cert_report(config: Dict, logger: logging.Logger) -> str:
         "domains": {}
     }
 
-    for entry in domains_list:
-        domain = entry["domain"]
-        clean_domain = domain.replace("*.", "")
-        cert_path = os.path.join(certbot_config_dir, "live", clean_domain, "fullchain.pem")
-
-        if not os.path.isfile(cert_path):
-            report["domains"][domain] = {"status": "missing", "error": "Certificate file not found"}
-            logger.warning(f"Certificate not found for: {domain}")
-            continue
-
-        try:
-            result = subprocess.run(
-                ["openssl", "x509", "-enddate", "-noout", "-in", cert_path],
-                capture_output=True, text=True, check=True, timeout=10
-            )
-            end_date_str = result.stdout.strip().split("=", 1)[1]
-            exp_date = datetime.strptime(end_date_str, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
-            days_left = (exp_date - now).days
-
-            report["domains"][domain] = {
-                "status": "valid",
-                "expires_on": exp_date.isoformat(),
-                "days_left": days_left,
-                "cert_path": cert_path,
+    tasks = build_cert_tasks(config.get("domains", []), general.get("default_provider", "ovh"))
+    # collect_cert_states walks the same tasks in the same order, one state per certificate.
+    for task, state in zip(tasks, collect_cert_states(config)):
+        cat = ui.category(state, 10 ** 6)
+        if cat == "missing":
+            entry = {"status": "missing", "certificate": state.name, "error": "Certificate file not found"}
+            logger.warning(f"Certificate not found for: {', '.join(task['domains'])}")
+        elif cat == "unreadable":
+            entry = {"status": "error", "certificate": state.name, "error": "Certificate could not be read"}
+            logger.error(f"Error reading certificate: {state.name}")
+        else:
+            entry = {
+                "status": "expired" if cat == "expired" else "valid",
+                "certificate": state.name,
+                "expires_on": state.expires.isoformat(),
+                "days_left": state.days_left,
+                "cert_path": os.path.join(certbot_config_dir, "live", state.name, "fullchain.pem"),
             }
-            logger.debug(f"{domain}: valid for {days_left} more days")
-        except Exception as e:
-            report["domains"][domain] = {"status": "error", "error": str(e)}
-            logger.error(f"Error reading certificate for {domain}: {e}")
+        for domain in task["domains"]:
+            report["domains"][domain] = entry
 
     report_path = general_path(general, "report", os.path.join(XCERT_ROOT, "logs", "xcert_report.json"))
     report_dir = os.path.dirname(report_path)
@@ -613,7 +659,7 @@ def collect_cert_states(config: Dict) -> List[ui.CertState]:
     now = datetime.now(timezone.utc)
     states = []
     for task in build_cert_tasks(config.get("domains", []), general.get("default_provider", "ovh")):
-        name = task["domains"][0].replace("*.", "")
+        name = cert_name(task["domains"][0])
         cert_path = os.path.join(certbot_config_dir, "live", name, "fullchain.pem")
         present = os.path.isfile(cert_path)
         expires = get_cert_expiry(cert_path) if present else None
@@ -664,10 +710,10 @@ def effective_appearance(config: Dict, args: Optional[argparse.Namespace] = None
 
 def make_painter(appearance: Dict[str, str], assume_terminal: bool = False) -> ui.Painter:
     mode = ui.resolve_color_mode(appearance["colors"], assume_terminal=assume_terminal)
-    if mode == "none":
-        # Legacy screens (editor, prompts) print Colors directly; blank them for plain output.
-        for name in [n for n in vars(Colors) if n.isupper()]:
-            setattr(Colors, name, "")
+    # Legacy screens (editor, prompts) print Colors directly; blank them for plain output
+    # and bring them back when the look switches to a colour mode again.
+    for name, code in COLOR_CODES.items():
+        setattr(Colors, name, "" if mode == "none" else code)
     return ui.Painter(appearance["theme"], mode, appearance["background"])
 
 
@@ -1009,7 +1055,7 @@ def main() -> None:
         config.setdefault("general", {})["dry_run"] = 1
 
     if "domains" not in config or "providers" not in config or "general" not in config:
-        logger.critical("❌ Invalid config.json — missing 'domains', 'providers', or 'general' section")
+        logger.critical("❌ Invalid config.json, missing 'domains', 'providers', or 'general' section")
         sys.exit(1)
 
     general = config["general"]

@@ -86,7 +86,7 @@
       "provider": "ovh"
     },
     {
-      "domain": "*.example.com",
+      "domain": "*.example.net",
       "email": "admin@example.com",
       "provider": "cloudflare"
     }
