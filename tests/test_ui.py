@@ -254,6 +254,13 @@ class KeysTest(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             ui.decode_key(b"\x03")
 
+    def test_held_arrow_yields_every_press(self):
+        buf, keys = b"\x1b[B\x1b[B\x1b[1;5A" + "ś".encode() + b"\rq", []
+        while buf:
+            key, buf = ui.split_key(buf)
+            keys.append(ui.decode_key(key))
+        self.assertEqual(keys, ["down", "down", "", "ś", "enter", "q"])
+
     def test_cursor_wraps_and_jumps_columns(self):
         self.assertEqual(ui.move("down", 7, 8), 0)
         self.assertEqual(ui.move("up", 0, 8), 7)
@@ -316,7 +323,8 @@ if __name__ == "__main__":
 
 class CheckScreenTest(unittest.TestCase):
     def test_rows_follow_what_validation_logged(self):
-        config = {"general": {"post_renewal_cmd": "echo 'open"}, "domains": [],
+        config = {"general": {"post_renewal_cmd": "echo 'open", "default_provider": "ovh"},
+                  "domains": [{"domain": "a.pl", "email": "x@a.pl", "provider": "broken"}],
                   "providers": {"ovh": {"cmd_template": "certbot", "credentials_path": "secrets/ovh.ini"},
                                 "broken": {}}}
         checks = []
@@ -327,6 +335,45 @@ class CheckScreenTest(unittest.TestCase):
         self.assertIn("missing 'cmd_template'", rows["provider broken"][1])
         self.assertEqual(rows["post_renewal_cmd, notify_cmd"][0], "err")
         self.assertEqual(rows["language and look"][0], "ok")
+
+    def test_unused_providers_need_no_credentials(self):
+        config = {"general": {"default_provider": "ovh"}, "domains": [{"domain": "a.pl", "email": "x@a.pl"}],
+                  "providers": {"ovh": {"cmd_template": "certbot"},
+                                "cloudflare": {"cmd_template": "certbot {credentials}",
+                                               "credentials_path": "/nonexistent/cloudflare.ini"}}}
+        checks = []
+        self.assertTrue(main.validate_config(config, QUIET, None, checks))
+        self.assertIn(("ok", "unused providers (1)", "cloudflare"), checks)
+
+
+class ScreenSizeTest(unittest.TestCase):
+    def tearDown(self):
+        ui.set_screen(80, 0)
+
+    def test_wide_window_stretches_bars_and_short_window_scrolls_lists(self):
+        config = {"general": {"default_provider": "ovh", "logs": 1},
+                  "domains": [{"domain": f"site{i}.example.pl", "email": "a@example.pl"} for i in range(30)]}
+        ui.set_screen(132, 24)
+        for theme in ui.THEMES:
+            p = ui.Painter(theme, "none")
+            for sel in (0, 17, 29, 33):
+                text = ui.render_editor(p, CTX, config, "/opt/xcert/config/config.json", sel,
+                                        main.EDITOR_ITEMS, main.DOMAIN_ITEMS)
+                lines = text.split("\n")
+                self.assertLessEqual(len(lines), 23, (theme, sel))
+                self.assertTrue(all(ui.visible_len(line) <= 132 for line in lines), (theme, sel))
+                if sel < 30:
+                    self.assertIn(f"site{sel}.example.pl", text, (theme, sel))
+            menu = ui.render_menu(p, CTX, STATES * 5, main.MENU_ITEMS, 0)
+            self.assertLessEqual(len(menu.split("\n")), 23, theme)
+        bar = ui.render_menu(ui.Painter("console", "none"), CTX, STATES, main.MENU_ITEMS, 0).split("\n")[0]
+        self.assertEqual(ui.visible_len(bar), 132)
+
+    def test_narrow_window_cuts_lines_without_breaking_colours(self):
+        line = ui.Painter("ledger", "16").fg("ok", "x" * 50) + "y" * 50
+        cut = ui.cut(line, 60)
+        self.assertEqual(ui.visible_len(cut), 60)
+        self.assertTrue(cut.endswith("\033[0m"))
 
     def test_screen_totals_and_no_emoji(self):
         for theme in ui.THEMES:
