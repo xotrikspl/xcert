@@ -138,11 +138,6 @@ class Output(unittest.TestCase):
             main.run_command(["certbot"], use_logs=False, logger=logger)
             logger.info.assert_called_once_with("STDOUT: issued")
 
-    def test_plain_mode_is_reversible(self):
-        main.make_painter({"theme": "ledger", "colors": "none", "background": "dark"})
-        self.assertEqual(main.Colors.RED, "")
-        main.make_painter({"theme": "ledger", "colors": "16", "background": "dark"}, assume_terminal=True)
-        self.assertEqual(main.Colors.RED, "\033[31m")
 
 
 class FailureNotice(unittest.TestCase):

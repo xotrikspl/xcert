@@ -33,6 +33,14 @@ STATES = [
     cert("api.example.dev", "missing", "digitalocean"),
     cert("a-very-long-subdomain-name.example-company.com", 200),
 ]
+EDITOR_CONFIG = {
+    "general": {"default_provider": "cloudflare", "logs": 1,
+                "post_renewal_cmd": "docker exec a-container-with-a-long-name nginx -s reload && echo done twice"},
+    "domains": [{"domain": "example.pl", "email": "admin@example.pl", "provider": "ovh"},
+                {"domain": "a-very-long-subdomain-name.example-company.com",
+                 "email": "certificates-and-alerts@example-company.com"},
+                {"domain": "*.example.pl", "email": "admin@example.pl", "provider": "digitalocean-long-name"}],
+}
 RESULTS = [("poczta.example.net", True), ("stara-strona.example.org", False), ("api.example.dev", True)]
 TIMINGS = [(0, 41), (45, 160), (210, 37)]
 
@@ -40,10 +48,21 @@ TIMINGS = [(0, 41), (45, 160), (210, 37)]
 def screens(p):
     yield ui.render_list(p, CTX, STATES)
     yield ui.render_summary(p, CTX, RESULTS, TIMINGS, 260)
-    yield ui.render_menu(p, CTX, STATES, main.MENU_ITEMS)
+    for sel in (0, 3, 7):
+        yield ui.render_menu(p, CTX, STATES, main.MENU_ITEMS, sel)
     yield ui.render_motd(p, CTX, STATES)
     yield ui.render_motd(p, CTX, STATES[:2])
-    yield ui.render_picker(p, CTX, dict(ui.DEFAULT_APPEARANCE), p.mode)
+    for sel in (0, 5):
+        yield ui.render_picker(p, CTX, dict(ui.DEFAULT_APPEARANCE), p.mode, "pl", sel)
+    for sel in (0, len(EDITOR_CONFIG["domains"]) + 6):
+        yield ui.render_editor(p, CTX, EDITOR_CONFIG, "/opt/xcert/config/a-rather-long-directory-name/config.json",
+                               sel, main.EDITOR_ITEMS, main.DOMAIN_ITEMS)
+    yield ui.render_editor(p, CTX, {"general": {}, "domains": []}, "/opt/xcert/config/config.json", 0,
+                           main.EDITOR_ITEMS, main.DOMAIN_ITEMS)
+    yield ui.render_choice(p, CTX, "provider for a-very-long-subdomain-name.example-company.com",
+                           ["ovh", "cloudflare", "route53"], 1, "ovh")
+    yield ui.render_report(p, CTX, STATES, "/opt/xcert/logs/a-rather-long-directory-name/xcert_report.json")
+    yield ui.render_head(p, CTX, "configuration")
 
 
 class RenderTest(unittest.TestCase):
@@ -177,6 +196,102 @@ class AppearanceTest(unittest.TestCase):
                     self.assertEqual(json_loader.load_config(config_path=path)["general"]["language"], saved_language)
                 self.assertEqual(i18n.current_language(), live_language)
         i18n.set_language("en")
+
+    def test_picker_arrows_preview_and_enter_saves(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.json")
+            json_loader.save_config({"general": {"logs": 0}}, config_path=path)
+            with scripted(["down", "down", ""]):
+                main.pick_appearance(path, dict(ui.DEFAULT_APPEARANCE), mock.Mock())
+            self.assertEqual(json_loader.load_config(config_path=path)["appearance"]["theme"], "console")
+
+
+def scripted(lines):
+    """Feeds keys and typed answers through the line-based fallback that tests and pipes get."""
+    feed = iter(lines)
+    return _Patches(mock.patch("builtins.input", lambda _="": next(feed)), mock.patch("builtins.print"),
+                    mock.patch.object(main, "timer_next_run", return_value=None))
+
+
+class _Patches:
+    def __init__(self, *patches):
+        self.patches = patches
+
+    def __enter__(self):
+        for patch in self.patches:
+            patch.start()
+
+    def __exit__(self, *exc):
+        for patch in reversed(self.patches):
+            patch.stop()
+
+
+class KeysTest(unittest.TestCase):
+    def test_escape_sequences_and_plain_keys(self):
+        self.assertEqual(ui.decode_key(b"\x1b[A"), "up")
+        self.assertEqual(ui.decode_key(b"\x1bOB"), "down")
+        self.assertEqual(ui.decode_key(b"\r"), "enter")
+        self.assertEqual(ui.decode_key(b"\x1b"), "esc")
+        self.assertEqual(ui.decode_key(b"Q"), "q")
+        self.assertEqual(ui.decode_key("ś".encode()), "ś")
+        self.assertEqual(ui.decode_key(b"\x1b[1;5A"), "")
+        with self.assertRaises(KeyboardInterrupt):
+            ui.decode_key(b"\x03")
+
+    def test_cursor_wraps_and_jumps_columns(self):
+        self.assertEqual(ui.move("down", 7, 8), 0)
+        self.assertEqual(ui.move("up", 0, 8), 7)
+        self.assertEqual(ui.move("right", 1, 8, ui.nav_step("timeline", 8)), 5)
+        self.assertEqual(ui.move("x", 3, 8), 3)
+
+    def test_selected_row_is_marked_in_every_look(self):
+        for theme in ui.THEMES:
+            text = ui.render_menu(ui.Painter(theme, "none"), CTX, STATES, main.MENU_ITEMS, 2)
+            self.assertIn("▸", text, theme)
+
+
+class EditorTest(unittest.TestCase):
+    def run_editor(self, keys, config=None):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "config.json")
+        config = config or {"general": {"default_provider": "ovh", "logs": 0},
+                            "providers": {"ovh": {}, "cloudflare": {}},
+                            "domains": [{"domain": "a.pl", "email": "admin@a.pl", "provider": "ovh"}]}
+        json_loader.save_config(config, config_path=path)
+        with scripted(keys):
+            main.edit_config_interactive(path, mock.Mock(), dict(ui.DEFAULT_APPEARANCE))
+        return json_loader.load_config(config_path=path)
+
+    def test_add_remove_and_command_without_typing_numbers(self):
+        saved = self.run_editor(["n", "b.pl", "", "2",  # add b.pl, keep the email, pick cloudflare
+                                 "1", "u", "t",          # cursor on a.pl, remove it
+                                 "o", "systemctl reload nginx",
+                                 "s"])
+        self.assertEqual(saved["domains"], [{"domain": "b.pl", "email": "admin@a.pl", "provider": "cloudflare"}])
+        self.assertEqual(saved["general"]["post_renewal_cmd"], "systemctl reload nginx")
+        self.assertEqual(list(saved["providers"]), ["ovh", "cloudflare"])
+
+    def test_enter_on_a_domain_offers_its_actions(self):
+        saved = self.run_editor(["", "2", "cloudflare", "s"])  # Enter, "change provider", typed name
+        self.assertEqual(saved["domains"][0]["provider"], "cloudflare")
+
+    def test_quit_asks_before_dropping_changes(self):
+        saved = self.run_editor(["l", "q", "n", "q", "t"])  # keep editing once, then discard
+        self.assertEqual(saved["general"]["logs"], 0)
+
+    def test_invalid_domain_is_rejected(self):
+        saved = self.run_editor(["n", "not a domain", "x@a.pl", "s"])
+        self.assertEqual([d["domain"] for d in saved["domains"]], ["a.pl"])
+
+
+class MenuTest(unittest.TestCase):
+    def test_arrows_and_enter_run_the_item_under_the_cursor(self):
+        config = {"general": {}, "providers": {}, "domains": []}
+        with scripted(["down", "", "q"]), mock.patch.object(main, "collect_cert_states", return_value=[]), \
+                mock.patch.object(main, "generate_cert_report", return_value="/tmp/r.json") as report:
+            main.interactive_menu(config, mock.Mock(), "config.json", dict(ui.DEFAULT_APPEARANCE))
+        report.assert_called_once()  # the cursor starts on "list", one down is "report"
 
 
 if __name__ == "__main__":
