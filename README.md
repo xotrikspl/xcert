@@ -120,6 +120,8 @@ xcert --auto --debug           # verbose logging, combines with any flag
 
 Every command accepts `--config PATH` (default: `config/config.json` in the repository), `--lang en|pl` and the appearance overrides below. `--auto` exits with code 1 when any certificate fails, so the systemd unit shows up as failed.
 
+`--menu` and `--edit-config` work with the arrow keys and Enter; each item's letter is a shortcut and `q` or Esc goes back. Screens redraw in place instead of scrolling. In the editor, Enter on a domain lists what you can do with it (change domain or email, change provider, remove), and providers are picked from a list, so only domains, emails and the post-renewal command are typed. Without a terminal (pipes, scripts) both read one line per choice instead.
+
 ## Appearance
 
 Three looks, all within 80 columns and without emoji so columns stay aligned in any terminal:
