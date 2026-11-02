@@ -13,6 +13,9 @@ import main  # noqa: E402
 
 LOGGER = logging.getLogger("xcert-test")
 LOGGER.disabled = True
+SETUP_LOG = logging.getLogger("xcert-test-setup")  # enabled: install and status rows come from what it logs
+SETUP_LOG.propagate = False
+SETUP_LOG.addHandler(logging.NullHandler())
 
 PROVIDERS = {"cloudflare": {"cmd_template": "certbot certonly --dns-cloudflare --dns-cloudflare-credentials "
                                             "{credentials} --non-interactive",
@@ -208,6 +211,92 @@ class Automation(unittest.TestCase):
         self.assertIsNone(auto["next_run"])
         self.assertTrue(auto["last_ok"])
         self.assertFalse(auto["loaded"])
+
+
+class Setup(unittest.TestCase):
+    """--install, --uninstall and --status against a temporary /etc, with every command faked."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.etc = tmp.name
+        paths = {"units": tmp.name, "motd": os.path.join(tmp.name, "99-cert-status"),
+                 "logrotate": os.path.join(tmp.name, "logrotate-xcert"), "xcert": os.path.join(tmp.name, "xcert"),
+                 "certbot": os.path.join(tmp.name, "certbot")}
+        self.config_path = os.path.join(tmp.name, "config.json")
+        self.commands = []
+        self.plugins = "* dns-cloudflare\n"
+
+        def fake_run(cmd, *args, **kwargs):
+            self.commands.append(cmd)
+            return (0, self.plugins, "") if cmd[1:2] == ["plugins"] else (0, "certbot 3.0.0", "")
+
+        for patch in (mock.patch.dict(main.SYSTEM_PATHS, paths), mock.patch.object(main, "is_root", return_value=True),
+                      mock.patch.object(main, "run_command", side_effect=fake_run),
+                      mock.patch.object(main.os, "symlink"), mock.patch.object(main.os, "chmod"),
+                      mock.patch.object(main, "systemd_show", return_value=[{}, {}])):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def which(self, *found):
+        return mock.patch.object(main.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"
+                                 if name in found else None)
+
+    def test_install_creates_config_copies_files_and_starts_the_timer(self):
+        checks = []
+        with self.which("certbot", "openssl"):
+            self.assertTrue(main.install(self.config_path, SETUP_LOG, checks))
+        self.assertTrue(os.path.isfile(self.config_path))
+        for source, target, _ in main.shipped_files():
+            with open(target, encoding="utf-8") as f:
+                self.assertEqual(f.read(), main.rendered(source))
+        with open(os.path.join(self.etc, "xcert.service"), encoding="utf-8") as f:
+            self.assertIn(f"ExecStart=/usr/bin/python3 {main.XCERT_ROOT}", f.read())  # this checkout, not /opt/xcert
+        self.assertIn(["systemctl", "enable", "--now", "xcert.timer"], self.commands)
+        self.assertEqual(checks[0][0], "warn")  # config created from the example: add your domains
+
+    def test_install_adds_missing_plugins_the_way_certbot_came(self):
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump({"general": {"default_provider": "ovh"}, "providers": {"ovh": {}, "cloudflare": {}},
+                       "domains": [{"domain": "a.pl", "email": "x@a.pl", "provider": "cloudflare"}]}, f)
+        with self.which("certbot", "openssl"), mock.patch.object(main, "certbot_origin", return_value="snap"):
+            main.install(self.config_path, SETUP_LOG, [])
+        self.assertIn(["snap", "install", "certbot-dns-ovh"], self.commands)
+        self.assertNotIn(["snap", "install", "certbot-dns-cloudflare"], self.commands)
+
+    def test_install_puts_certbot_into_a_venv_when_missing(self):
+        with self.which("openssl"):
+            main.install(self.config_path, SETUP_LOG, [])
+        pip = os.path.join(main.CERTBOT_VENV, "bin", "pip")
+        install = next(cmd for cmd in self.commands if cmd[:3] == [pip, "install", "certbot"])
+        self.assertIn("certbot-dns-ovh", install)  # the example's default provider
+
+    def test_install_needs_root(self):
+        checks = []
+        with mock.patch.object(main, "is_root", return_value=False):
+            self.assertFalse(main.install(self.config_path, SETUP_LOG, checks))
+        self.assertEqual(checks[0][0], "err")
+        self.assertFalse(os.path.exists(self.config_path))
+
+    def test_status_names_what_is_missing(self):
+        config = {"general": {"default_provider": "ovh"}, "providers": {"ovh": {}}, "domains": []}
+        checks = []
+        with self.which("certbot"):
+            self.assertFalse(main.system_status(config, SETUP_LOG, checks))
+        rows = {label: (lvl, detail) for lvl, label, detail in checks}
+        self.assertEqual(rows["DNS plugins"][0], "err")
+        self.assertIn("dns-ovh", rows["DNS plugins"][1])
+        self.assertEqual(rows["openssl"][0], "err")
+        self.assertEqual(rows["xcert.timer"][0], "err")
+        self.assertEqual(rows["failure notices"][0], "warn")
+
+    def test_uninstall_removes_only_what_install_wrote(self):
+        with self.which("certbot", "openssl"):
+            main.install(self.config_path, SETUP_LOG, [])
+        self.assertTrue(main.uninstall(SETUP_LOG, []))
+        for _, target, _ in main.shipped_files():
+            self.assertFalse(os.path.exists(target))
+        self.assertTrue(os.path.isfile(self.config_path))
 
 
 if __name__ == "__main__":

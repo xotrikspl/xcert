@@ -52,6 +52,11 @@ CHECKS = [("ok", "config sections", ""),
           ("warn", "provider route53", "Insecure permissions on /opt/xcert/secrets/route53.ini: 0o644 "
                                        "(recommended: 0o600, fix: chmod 600 /opt/xcert/secrets/route53.ini)"),
           ("err", "post_renewal_cmd, notify_cmd", "general.notify_cmd cannot be parsed: No closing quotation")]
+STATUS = [("ok", "certbot", "certbot 3.0.0 (venv)"), ("err", "DNS plugins",
+                                                     "Missing plugins dns-ovh: xcert --install"),
+          ("ok", "units, MOTD, logrotate", "installed and current"),
+          ("err", "last timer run", "Last run 27.10 01:12 failed: Unable to determine zone_id for example.com"),
+          ("warn", "failure notices", "notify_cmd empty: no failure notices")]
 RESULTS = [("poczta.example.net", True), ("stara-strona.example.org", False), ("api.example.dev", True)]
 TIMINGS = [(0, 41), (45, 160), (210, 37)]
 
@@ -80,6 +85,7 @@ def screens(p):
     yield ui.render_head(p, CTX, "configuration")
     yield ui.render_check(p, CTX, CHECKS, "/opt/xcert/config/a-rather-long-directory-name/config.json")
     yield ui.render_check(p, CTX, CHECKS[:1], "/opt/xcert/config/config.json")
+    yield ui.render_check(p, CTX, CHECKS + STATUS, "/opt/xcert/config/config.json", i18n.t("status"))
     for outcome in ("renew", "issue", "skip", "ok", "fail"):
         yield ui.render_step(p, "a-very-long-subdomain-name.example-company.com", outcome, "digitalocean", 260,
                              ["⏳ Rate-limit (route53) for a-very-long-subdomain-name.example-company.com. Waiting 75s",
