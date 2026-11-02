@@ -53,6 +53,7 @@ It ends with the full `--status` screen, so a fresh install lists what is left t
 ├── secrets/            DNS provider credentials (not in git)
 ├── logs/               xCert logs and the JSON report (not in git)
 ├── etc/                systemd units, MOTD script and logrotate file that --install copies into /etc
+├── docs/               guides in Polish (self-hosted ntfy)
 └── tests/
 ```
 
@@ -271,6 +272,80 @@ When `xcert.service` fails, whether a certificate failed, `post_renewal_cmd` fai
 ```
 
 Use `--data-binary @-` with curl; plain `-d @-` drops the line breaks. Set it in the config editor (`xcert --edit-config` or menu `e`, then `a`) or in `config.json`; run `xcert --notify-failure` by hand to send a test notice. With `notify_cmd` empty nothing is sent.
+
+### Self-hosted ntfy
+
+Running your own [ntfy](https://docs.ntfy.sh/) on the same server keeps notices private and lets them arrive even when the certificate in front of ntfy is the thing that broke. Step-by-step guide in Polish: [docs/ntfy.md](docs/ntfy.md).
+
+1. Install ntfy from its own repository (Debian's `ntfy` package is a different program):
+
+   ```bash
+   mkdir -p /etc/apt/keyrings
+   curl -L -o /etc/apt/keyrings/ntfy.gpg https://archive.ntfy.sh/apt/keyring.gpg
+   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/ntfy.gpg] https://archive.ntfy.sh/apt stable main" \
+       > /etc/apt/sources.list.d/ntfy.list
+   apt update && apt install ntfy
+   ```
+
+2. `/etc/ntfy/server.yml`: listen on localhost only (nginx already owns port 80) and deny anonymous access. `require-login` needs `enable-login`:
+
+   ```yaml
+   base-url: "https://ntfy.example.com"
+   listen-http: "127.0.0.1:2586"
+   behind-proxy: true
+   auth-file: "/var/lib/ntfy/user.db"
+   auth-default-access: "deny-all"
+   enable-login: true
+   require-login: true
+   ```
+
+   `systemctl enable --now ntfy` (after a failed start: `systemctl reset-failed ntfy` first). The `auth-file` is created on the first start.
+
+3. Users: one for you, one that xCert can only publish with.
+
+   ```bash
+   ntfy user add --role=admin me
+   ntfy user add xcert
+   ntfy access xcert xcert write-only
+   ntfy token add --label=xcert xcert      # prints tk_...
+   ```
+
+4. Keep the token out of `config.json`, in a root-only file that curl reads with `-K`:
+
+   ```bash
+   printf 'header = "Authorization: Bearer %s"\n' 'tk_YOUR_TOKEN' > /opt/xcert/secrets/ntfy.curl
+   chmod 600 /opt/xcert/secrets/ntfy.curl
+   ```
+
+   ```json
+   "notify_cmd": "curl -fsS -K /opt/xcert/secrets/ntfy.curl -H 'Title: xCert failed' --data-binary @- http://127.0.0.1:2586/xcert"
+   ```
+
+5. For the phone app, publish ntfy over HTTPS: add `ntfy.example.com` to the DNS zone and to xCert (`xcert --edit-config`, `n`), run `xcert --auto`, then proxy it in nginx with that certificate. A subdomain gets its own certificate, so point at `live/ntfy.example.com/`, not the bare domain's. With nginx from nginx.org the file must end in `.conf`:
+
+   ```nginx
+   server {
+       listen 443 ssl;
+       server_name ntfy.example.com;
+       ssl_certificate     /etc/letsencrypt/live/ntfy.example.com/fullchain.pem;
+       ssl_certificate_key /etc/letsencrypt/live/ntfy.example.com/privkey.pem;
+
+       location / {
+           proxy_pass http://127.0.0.1:2586;
+           proxy_http_version 1.1;
+           proxy_buffering off;
+           proxy_request_buffering off;
+           proxy_set_header Host $http_host;
+           proxy_set_header Upgrade $http_upgrade;
+           proxy_set_header Connection "upgrade";
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_read_timeout 3m;
+           client_max_body_size 0;
+       }
+   }
+   ```
+
+6. In the app, add the user under Settings > Manage users for `https://ntfy.example.com` before subscribing to `xcert`; without it a `deny-all` server sends nothing. Check both directions: `xcert --notify-failure` arrives on the phone, and an anonymous `curl -d test https://ntfy.example.com/xcert` gets `403`.
 
 ## Status at SSH login
 
