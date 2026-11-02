@@ -339,6 +339,17 @@ class Setup(unittest.TestCase):
         self.assertIn("fast-forward", checks[-1][2])
         self.assertFalse(any(cmd[0] == "systemctl" for cmd in self.commands))
 
+    def test_install_screen_shows_each_check_once(self):
+        args = mock.Mock(config=self.config_path, uninstall=False, update=False, debug=False,
+                         theme=None, colors=None, background=None)
+        with self.which("certbot", "openssl"), mock.patch.object(main, "screen_mode", return_value=True), \
+                mock.patch.object(main.ui, "draw"), mock.patch.object(main.ui, "fit_screen"), \
+                mock.patch.object(main.ui, "render_check", return_value="") as render:
+            main.run_setup(args, SETUP_LOG)
+        labels = [label for _, label, _ in render.call_args.args[2]]
+        self.assertEqual(len(labels), len(set(labels)), labels)
+        self.assertIn("config.json", labels)  # install-only steps stay
+
     def test_uninstall_removes_only_what_install_wrote(self):
         with self.which("certbot", "openssl"):
             main.install(self.config_path, SETUP_LOG, [])
