@@ -135,12 +135,28 @@ def get_cert_days_left(cert_path: str) -> Optional[int]:
     return None if exp is None else (exp - datetime.now(timezone.utc)).days
 
 
-def cert_days_left(domain: str, general_config: Dict) -> Optional[int]:
-    """Returns days until certificate expiry using the configured certbot_config_dir."""
+def get_cert_domains(cert_path: str) -> Optional[set]:
+    """Names the certificate covers (subjectAltName), or None when openssl cannot read it."""
+    try:
+        out = subprocess.run(["openssl", "x509", "-noout", "-text", "-in", cert_path],
+                             capture_output=True, text=True, check=True, timeout=10).stdout
+    except Exception:
+        return None
+    return {name.lower() for name in re.findall(r"DNS:([^,\s]+)", out)}
+
+
+def cert_days_left(domains: List[str], general_config: Dict) -> Optional[int]:
+    """Days until the group's certificate expires; None when it is missing or covers other domains.
+
+    None makes the next run issue it, so a domain added to config.json is not left out until renewal.
+    """
     cert_path = os.path.join(
         general_path(general_config, "certbot_config_dir", "/etc/letsencrypt"),
-        "live", cert_name(domain), "cert.pem",
+        "live", cert_name(domains[0]), "cert.pem",
     )
+    covered = get_cert_domains(cert_path)
+    if covered is not None and covered != {d.lower() for d in domains}:
+        return None
     return get_cert_days_left(cert_path)
 
 # ======================
@@ -280,7 +296,7 @@ def cert_for_domains(
         return False
 
     name = cert_name(domains[0])
-    days_left = cert_days_left(domains[0], general_config)
+    days_left = cert_days_left(domains, general_config)
     renew_threshold_days = int(general_config.get("renew_threshold_days", 30))
     if renew_threshold_days > 0 and days_left is not None and days_left > renew_threshold_days:
         logger.info(
@@ -461,7 +477,7 @@ def cert_auto(
                 step(ui.render_step(painter, name, "fail", task["provider"], 0,
                                     [r.getMessage() for r in rec.records[mark:]]))
                 continue
-            days = cert_days_left(task["domains"][0], general)
+            days = cert_days_left(task["domains"], general)
             skipped = threshold > 0 and days is not None and days > threshold
             if not skipped:
                 step(ui.render_step(painter, name, "renew" if days is not None else "issue", task["provider"]), False)
