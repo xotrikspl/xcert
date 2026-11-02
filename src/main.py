@@ -561,11 +561,12 @@ def validate_config(
                      f"give these domains the same email and provider")
         valid = False
 
-    try:
-        shlex.split(general.get("post_renewal_cmd") or "")
-    except ValueError as e:
-        logger.error(f"general.post_renewal_cmd cannot be parsed: {e}")
-        valid = False
+    for key in ("post_renewal_cmd", "notify_cmd"):
+        try:
+            shlex.split(general.get(key) or "")
+        except ValueError as e:
+            logger.error(f"general.{key} cannot be parsed: {e}")
+            valid = False
 
     language = general.get("language")
     if language is not None and language not in i18n.LANGUAGES:
@@ -675,6 +676,47 @@ def collect_cert_states(config: Dict) -> List[ui.CertState]:
     return states
 
 
+def journal_tail(lines: int = 40) -> str:
+    """Last lines of the xcert.service journal, empty when journalctl is unavailable."""
+    try:
+        return subprocess.run(
+            ["journalctl", "-u", "xcert.service", "-n", str(lines), "--no-pager", "-o", "cat"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def send_failure_notice(config: Dict, logger: logging.Logger) -> bool:
+    """Pipes a failure notice into general.notify_cmd (mail, curl, ...) on stdin."""
+    try:
+        cmd = shlex.split(config.get("general", {}).get("notify_cmd") or "")
+    except ValueError as e:
+        logger.error(f"general.notify_cmd cannot be parsed: {e}")
+        return False
+    if not cmd:
+        logger.warning("general.notify_cmd is not set, no notification sent")
+        return True
+
+    journal = journal_tail()
+    message = "\n".join([
+        t("xCert: certificate renewal failed on {host}", host=socket.gethostname()),
+        "",
+        t("Last lines of the xcert.service journal:") + "\n\n" + journal if journal
+        else t("Journal unavailable, check: journalctl -u xcert.service"),
+    ]) + "\n"
+    try:
+        result = subprocess.run(cmd, input=message, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.error(f"notify_cmd failed: {e}")
+        return False
+    if result.returncode != 0:
+        logger.error(f"notify_cmd failed (rc={result.returncode}): {result.stderr.strip()}")
+        return False
+    logger.info("Failure notice sent")
+    return True
+
+
 def timer_next_run() -> Optional[datetime]:
     """Next xcert.timer elapse in local time, or None when systemd or the timer is unavailable."""
     try:
@@ -718,13 +760,14 @@ def make_painter(appearance: Dict[str, str], assume_terminal: bool = False) -> u
 
 
 def pick_appearance(config_path: str, appearance: Dict[str, str], logger: logging.Logger) -> None:
-    """Interactive look picker; saves to config.json on 's' and updates `appearance` in place."""
+    """Interactive look and language picker; saves to config.json on 's' and updates `appearance` in place."""
     draft = dict(appearance)
+    original_language = language = i18n.current_language()
     ctx = build_ui_context({})
     while True:
         painter = make_painter(draft)
         print()
-        print(ui.render_picker(painter, ctx, draft, painter.mode))
+        print(ui.render_picker(painter, ctx, draft, painter.mode, language))
         choice = input(ui.prompt(painter)).strip().lower()
         if choice in ("1", "2", "3"):
             draft["theme"] = ui.THEMES[int(choice) - 1]
@@ -732,18 +775,25 @@ def pick_appearance(config_path: str, appearance: Dict[str, str], logger: loggin
             draft["colors"] = ui.COLOR_MODES[(ui.COLOR_MODES.index(draft["colors"]) + 1) % len(ui.COLOR_MODES)]
         elif choice == "b":
             draft["background"] = "light" if draft["background"] == "dark" else "dark"
+        elif choice == "l":
+            language = i18n.LANGUAGES[(i18n.LANGUAGES.index(language) + 1) % len(i18n.LANGUAGES)]
+            i18n.set_language(language)  # preview right away
         elif choice == "s":
             try:
                 raw = load_config(config_path=config_path)
                 raw["appearance"] = draft
+                raw.setdefault("general", {})["language"] = language
                 save_config(raw, config_path=config_path)
             except Exception as e:
                 logger.error(f"Could not save appearance: {e}")
+                i18n.set_language(original_language)
                 return
             appearance.update(draft)
-            logger.info(f"Look saved: {draft['theme']}, colours {draft['colors']}, background {draft['background']}")
+            logger.info(f"Look saved: {draft['theme']}, colours {draft['colors']}, background {draft['background']}, "
+                        f"language {language}")
             return
         elif choice in ("q", ""):
+            i18n.set_language(original_language)
             return
 
 # ======================
@@ -940,7 +990,7 @@ MENU_ITEMS = [
     ("r", "save validity report", "Report"),
     ("e", "edit configuration", "Edit"),
     ("s", "check configuration and credentials", "Check"),
-    ("t", "change look", "Look"),
+    ("t", "change look and language", "Look"),
     ("q", "quit", "Quit"),
 ]
 # Digits from the pre-1.3 numbered menu keep working.
@@ -1039,6 +1089,8 @@ def main() -> None:
     parser.add_argument("--colors", choices=ui.COLOR_MODES, help=t("Colours for this run: auto, full (24-bit), 16 or none"))
     parser.add_argument("--background", choices=ui.BACKGROUNDS, help=t("Palette for a dark or light terminal"))
     parser.add_argument("--lang", choices=i18n.LANGUAGES, help=t("Language for this run: en or pl"))
+    parser.add_argument("--notify-failure", action="store_true",
+                        help=t("Send the failure notice through general.notify_cmd (used by xcert-notify.service)"))
 
     args = parser.parse_args()
 
@@ -1065,6 +1117,9 @@ def main() -> None:
             sys.exit(1)
 
     appearance = effective_appearance(config, args)
+
+    if args.notify_failure:
+        sys.exit(0 if send_failure_notice(config, logger) else 1)
 
     if args.motd:
         painter = make_painter(appearance, assume_terminal=True)

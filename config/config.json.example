@@ -10,6 +10,7 @@
     "certbot_logs_dir": "/var/log/letsencrypt",
     "renew_threshold_days": 30,
     "post_renewal_cmd": "systemctl reload nginx",
+    "notify_cmd": "",
     "max_retries": 3,
     "base_backoff_seconds": 60,
     "backoff_jitter_seconds": 15,

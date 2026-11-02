@@ -83,7 +83,7 @@ PL = {
     "save validity report": "zapisz raport ważności",
     "edit configuration": "edytuj konfigurację",
     "check configuration and credentials": "sprawdź konfigurację i poświadczenia",
-    "change look": "zmień wygląd",
+    "change look and language": "zmień wygląd i język",
     "quit": "wyjdź",
     "Renew": "Odnów",
     "Issue": "Wystaw",
@@ -100,6 +100,7 @@ PL = {
     "(now {mode})": "(teraz {mode})",
     "colours": "kolory",
     "background": "tło",
+    "language": "język",
     "save": "zapisz",
     "back": "wróć",
     "auto": "auto",
@@ -181,6 +182,12 @@ PL = {
     "Colours for this run: auto, full (24-bit), 16 or none": "Kolory na to uruchomienie: auto, full (24-bit), 16 lub none",
     "Palette for a dark or light terminal": "Paleta dla ciemnego lub jasnego terminala",
     "Language for this run: en or pl": "Język na to uruchomienie: en lub pl",
+    "Send the failure notice through general.notify_cmd (used by xcert-notify.service)":
+        "Wyślij powiadomienie o błędzie przez general.notify_cmd (używa go xcert-notify.service)",
+    # Failure notice
+    "xCert: certificate renewal failed on {host}": "xCert: odnawianie certyfikatów nie powiodło się na {host}",
+    "Last lines of the xcert.service journal:": "Ostatnie linie journala xcert.service:",
+    "Journal unavailable, check: journalctl -u xcert.service": "Journal niedostępny, sprawdź: journalctl -u xcert.service",
 }
 
 _language = DEFAULT_LANGUAGE
@@ -190,6 +197,10 @@ def set_language(language: Optional[str]) -> None:
     """Switches the language; unknown or empty values fall back to English."""
     global _language
     _language = language if language in LANGUAGES else DEFAULT_LANGUAGE
+
+
+def current_language() -> str:
+    return _language
 
 
 def t(text: str, **values) -> str:

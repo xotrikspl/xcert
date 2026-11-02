@@ -605,7 +605,11 @@ THEME_NAMES = {"ledger": "ledger", "timeline": "timeline", "console": "console"}
 COLOR_NAMES = {"auto": "auto", "full": "full (24-bit)", "16": "16 colours", "none": "none"}
 
 
-def render_picker(p: Painter, ctx: Context, appearance: Dict[str, str], effective_mode: str) -> str:
+LANGUAGE_NAMES = {"en": "English", "pl": "polski"}  # each in its own language, so it is recognisable
+
+
+def render_picker(p: Painter, ctx: Context, appearance: Dict[str, str], effective_mode: str,
+                  language: str = "en") -> str:
     """Look picker: each option is drawn with a sample of that look."""
     sample_state = CertState("example.pl", "ovh", present=True, days_left=79,
                              expires=ctx.now + timedelta(days=79))
@@ -622,11 +626,13 @@ def render_picker(p: Painter, ctx: Context, appearance: Dict[str, str], effectiv
         out.append(f"  {marker} {p.fg('accent', str(i), bold=True)}  {pad(THEME_NAMES[theme], 10)} {samples[theme]}")
     note = "" if appearance["colors"] == effective_mode else p.dim(
         "  " + t("(now {mode})", mode=t(COLOR_NAMES[effective_mode])))
-    keys = [("1-3", t("look")), ("c", t("colours")), ("b", t("background")), ("s", t("save")), ("q", t("back"))]
+    keys = [("1-3", t("look")), ("c", t("colours")), ("b", t("background")), ("l", t("language")),
+            ("s", t("save")), ("q", t("back"))]
     out += ["",
             f"  {p.fg('accent', 'c', bold=True)}  {pad(t('colours'), 13)}"
             f"{p.bold(t(COLOR_NAMES[appearance['colors']]))}{note}",
             f"  {p.fg('accent', 'b', bold=True)}  {pad(t('background'), 13)}{p.bold(t(appearance['background']))}",
+            f"  {p.fg('accent', 'l', bold=True)}  {pad(t('language'), 13)}{p.bold(LANGUAGE_NAMES[language])}",
             "",
             p.dim("  " + t("one-off for a single command:") + " xcert --theme console --colors 16 --list"),
             p.dim("  " + t("NO_COLOR, journald and cron always get plain text")),
