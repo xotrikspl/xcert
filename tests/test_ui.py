@@ -316,6 +316,18 @@ class MenuTest(unittest.TestCase):
             main.interactive_menu(config, QUIET, "config.json", dict(ui.DEFAULT_APPEARANCE))
         report.assert_called_once()  # the cursor starts on "list", one down is "report"
 
+    def test_issue_checks_input_and_uses_the_renewal_screen(self):
+        config = {"general": {"default_provider": "ovh"}, "providers": {"ovh": {}, "cloudflare": {}},
+                  "domains": [{"domain": "a.pl", "email": "admin@a.pl"}]}
+        # A bad domain stops before the email and provider questions, Enter keeps the suggested email.
+        with scripted(["w", "not a domain", "w", "b.pl", "", "2", "q"]), \
+                mock.patch.object(main, "collect_cert_states", return_value=[]), \
+                mock.patch.object(main, "cert_auto", return_value=[("b.pl", True)]) as run:
+            main.interactive_menu(config, QUIET, "config.json", dict(ui.DEFAULT_APPEARANCE))
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0]["domains"],
+                         [{"domain": "b.pl", "email": "admin@a.pl", "provider": "cloudflare"}])
+
 
 if __name__ == "__main__":
     unittest.main()
