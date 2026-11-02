@@ -209,7 +209,7 @@ xcert --list --theme console --colors 16 --background light
 | `default_provider` | `ovh` | Provider for domains without their own `provider`. |
 | `logs` | `1` | `1` writes Certbot output to `output` / `error` (both required then), `0` prints it to the console. |
 | `report` | `logs/xcert_report.json` | Where `--report` writes the JSON report. |
-| `certbot_config_dir` | `/etc/letsencrypt` | Certbot `--config-dir`; certificates land in `<dir>/live/<name>/`, where `<name>` is the first domain of the group without `*.`. xCert passes it as `--cert-name`, so adding or removing a domain updates that certificate instead of creating `<name>-0001`. |
+| `certbot_config_dir` | `/etc/letsencrypt` | Certbot `--config-dir`; certificates land in `<dir>/live/<name>/`, where `<name>` is the first domain of the group without `*.`. xCert passes it as `--cert-name`, so adding or removing a domain updates that certificate instead of creating `<name>-0001`, on the next run rather than at renewal time. |
 | `certbot_work_dir`, `certbot_logs_dir` | `/var/lib/letsencrypt`, `/var/log/letsencrypt` | Certbot `--work-dir` and `--logs-dir`. |
 | `renew_threshold_days` | `30` | Skip certificates valid for more than this many days. A certificate inside the threshold is renewed with `--force-renewal`, so values above Certbot's own 30-day window work too. Set `0` to renew on every run, which burns Let's Encrypt limits. |
 | `post_renewal_cmd` | empty | Command run after each successful renewal, skipped on dry runs. It is split like a shell command but not run through a shell, so `&&` and pipes do not work; call a script for several steps. A non-zero exit marks the certificate as failed, so `--auto` and the systemd unit fail too. |
