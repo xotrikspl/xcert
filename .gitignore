@@ -5,6 +5,7 @@ __pycache__/
 .connect/
 .claude/
 .serena/
+CLAUDE.md
 
 # Local config, logs and credentials stay on the machine
 config/config.json
