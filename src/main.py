@@ -1185,7 +1185,11 @@ def run_setup(args: argparse.Namespace, logger: logging.Logger) -> bool:
             except Exception:
                 pass
             if ok and config:
-                ok = check_all(config, logger, None, checks, system=True)
+                status: List[Tuple[str, str, str]] = []
+                ok = check_all(config, logger, None, status, system=True)
+                # Status rows say more than the matching install steps (versions, next run), so they replace them.
+                labels = {label for _, label, _ in status}
+                checks[:] = [c for c in checks if c[1] not in labels] + status
     if screen_mode(args):
         ui.fit_screen()
         ui.draw(ui.render_check(make_painter(effective_appearance(config, args)), build_ui_context(config), checks,
