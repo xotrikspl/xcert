@@ -132,7 +132,7 @@ Three looks, all within 80 columns and without emoji so columns stay aligned in 
 
 Colours: `auto` uses 24-bit colour when the terminal reports `COLORTERM=truecolor` (or runs in Windows Terminal) and the 16 ANSI colours otherwise; `full`, `16` and `none` force a mode. `NO_COLOR`, pipes, cron and journald always get plain text. `background` picks the palette for a `dark` or `light` terminal.
 
-Change it in the menu (`t`, saved to `config.json`) or for a single command:
+Change it in the menu (`t`, saved to `config.json`; `l` there switches the language) or for a single command:
 
 ```bash
 xcert --list --theme timeline
@@ -156,6 +156,7 @@ xcert --list --theme console --colors 16 --background light
     "certbot_logs_dir": "/var/log/letsencrypt",
     "renew_threshold_days": 30,
     "post_renewal_cmd": "systemctl reload nginx",
+    "notify_cmd": "",
     "max_retries": 3,
     "base_backoff_seconds": 60,
     "backoff_jitter_seconds": 15,
@@ -207,7 +208,8 @@ xcert --list --theme console --colors 16 --background light
 | `command_timeout_seconds` | `900` | Certbot run is killed after this long. |
 | `sleep_between_domains_seconds` | `10` | Pause between certificates, keeps DNS APIs calm. |
 | `dry_run` | `0` | `1` makes every run a dry run, same as `--dry-run`. |
-| `language` | `en` | Language of the CLI, menu, `--help` and MOTD: `en` or `pl`. `--lang` overrides it for one command. Logs and the JSON report stay in English. |
+| `language` | `en` | Language of the CLI, menu, `--help` and MOTD: `en` or `pl`. `--lang` overrides it for one command, `l` in the look screen saves it. Logs and the JSON report stay in English. |
+| `notify_cmd` | empty | Command that gets the failure notice on stdin when the timer run fails, see [Failure notifications](#failure-notifications). |
 
 `retry_count` and `retry_delay_seconds` from older configs still work as aliases of `max_retries` and `base_backoff_seconds`.
 
@@ -240,15 +242,26 @@ Reload the container after renewal with `post_renewal_cmd`, for example `docker 
 
 ## Automation
 
-The repository ships both units in `etc/systemd/system/`: `xcert.service` runs `--auto` as a oneshot job, `xcert.timer` starts it every Monday at 01:00 (`Persistent=true` catches up after downtime). The service waits for `network-online.target`, so a catch-up run right after boot does not fail on DNS. After `git pull`, copy the units again when they changed.
+The repository ships the units in `etc/systemd/system/`: `xcert.service` runs `--auto` as a oneshot job, `xcert.timer` starts it every Monday between 01:00 and 02:00 (a random delay keeps clients off the full hour, `Persistent=true` catches up after downtime), and `xcert-notify.service` sends the failure notice. The service waits for `network-online.target`, so a catch-up run right after boot does not fail on DNS. After `git pull`, copy the units again when they changed.
 
 ```bash
-cp /opt/xcert/etc/systemd/system/xcert.{service,timer} /etc/systemd/system/
+cp /opt/xcert/etc/systemd/system/xcert* /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now xcert.timer
 systemctl start xcert.service      # one manual run
 journalctl -u xcert.service        # its output, always plain text
 ```
+
+### Failure notifications
+
+When `xcert.service` fails, whether a certificate failed, `post_renewal_cmd` failed or the run crashed or ran out of memory, systemd starts `xcert-notify.service` (`OnFailure=`). It runs `xcert --notify-failure`, which pipes a short notice with the last 40 journal lines into `general.notify_cmd` on stdin. The command is split like a shell command, not run through a shell:
+
+```json
+"notify_cmd": "mail -s 'xCert failed' admin@example.com"
+"notify_cmd": "curl -fsS -H 'Title: xCert failed' --data-binary @- https://ntfy.sh/my-topic"
+```
+
+Use `--data-binary @-` with curl; plain `-d @-` drops the line breaks. Run `xcert --notify-failure` by hand to send a test notice. With `notify_cmd` empty nothing is sent.
 
 ## Status at SSH login
 
