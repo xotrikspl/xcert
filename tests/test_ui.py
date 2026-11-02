@@ -438,3 +438,11 @@ class LiveRenewalTest(unittest.TestCase):
         self.assertIn("skipped, valid for 60 more days", text)
         self.assertIn("renewing via ovh ...", text)
         self.assertIn("done via ovh", text)
+        self.assertIn("renewed 1   skipped 1   failed 0", text)  # a still-valid certificate is not "renewed"
+
+    def test_summary_counts_skipped_apart_in_every_look(self):
+        results = [("a.pl", True), ("b.pl", True), ("c.pl", False)]
+        for theme in ui.THEMES:
+            text = ui.render_summary(ui.Painter(theme, "none"), CTX, results, [(0, 0), (0, 40), (40, 5)], 45, ["a.pl"])
+            self.assertIn("skipped 1", text, theme)
+            self.assertNotIn(" 2 ", text.replace("skipped 1", ""), theme)
