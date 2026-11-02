@@ -186,5 +186,29 @@ class Report(unittest.TestCase):
         self.assertEqual(domains["broken.example.net"]["status"], "missing")
 
 
+
+class Automation(unittest.TestCase):
+    SHOW = ("LoadState=loaded\nActiveState=active\nUnitFileState=enabled\nResult=success\n"
+            "NextElapseUSecRealtime=Mon 2026-11-09 01:23:45 CET\n\n"
+            "LoadState=loaded\nActiveState=failed\nUnitFileState=static\nResult=exit-code\n"
+            "ExecMainStartTimestamp=Mon 2026-11-02 01:40:02 CET\n")
+
+    def test_timer_and_last_run_come_from_systemctl_show(self):
+        with mock.patch.object(main.subprocess, "run", return_value=mock.Mock(stdout=self.SHOW)):
+            auto = main.automation()
+        self.assertEqual(auto["next_run"], datetime(2026, 11, 9, 1, 23, 45))
+        self.assertEqual(auto["last_run"], datetime(2026, 11, 2, 1, 40, 2))
+        self.assertFalse(auto["last_ok"])
+        self.assertFalse(auto["running"])
+        self.assertTrue(auto["enabled"])
+
+    def test_no_systemd_means_no_timer(self):
+        with mock.patch.object(main.subprocess, "run", side_effect=FileNotFoundError):
+            auto = main.automation()
+        self.assertIsNone(auto["next_run"])
+        self.assertTrue(auto["last_ok"])
+        self.assertFalse(auto["loaded"])
+
+
 if __name__ == "__main__":
     unittest.main()

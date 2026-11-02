@@ -1,3 +1,4 @@
+import dataclasses
 import io
 import logging
 import os
@@ -62,6 +63,10 @@ def screens(p):
         yield ui.render_menu(p, CTX, STATES, main.MENU_ITEMS, sel)
     yield ui.render_motd(p, CTX, STATES)
     yield ui.render_motd(p, CTX, STATES[:2])
+    failed = dataclasses.replace(CTX, last_run=datetime(2026, 10, 27, 1, 12), last_ok=False)
+    yield ui.render_list(p, failed, STATES)
+    yield ui.render_menu(p, failed, STATES, main.MENU_ITEMS, 0)
+    yield ui.render_motd(p, failed, STATES[:2])
     for sel in (0, 5):
         yield ui.render_picker(p, CTX, dict(ui.DEFAULT_APPEARANCE), p.mode, "pl", sel)
     for sel in (0, len(EDITOR_CONFIG["domains"]) + 6):
@@ -125,6 +130,17 @@ class RenderTest(unittest.TestCase):
         self.assertIn("stara-strona.example.org", text)
         self.assertIn("api.example.dev", text)
         self.assertNotIn("sklep.example.pl", text)
+
+    def test_failed_timer_run_shows_in_list_menu_and_motd(self):
+        failed = dataclasses.replace(CTX, last_run=datetime(2026, 10, 27, 1, 12), last_ok=False)
+        p = ui.Painter("ledger", "none")
+        for text in (ui.render_list(p, failed, STATES), ui.render_menu(p, failed, STATES, main.MENU_ITEMS, 0),
+                     ui.render_motd(p, failed, STATES[:2])):
+            self.assertIn("last timer run failed (Tue 27.10 01:12)", text)
+        self.assertNotIn("failed (", ui.render_motd(p, CTX, STATES[:2]))
+        running = dataclasses.replace(failed, running=True)
+        self.assertIn("renewal running now", ui.render_motd(p, running, STATES[:2]))
+        self.assertNotIn("last timer run failed", ui.render_motd(p, running, STATES[:2]))
 
     def test_categories(self):
         cats = [ui.category(s, 30) for s in STATES]
@@ -190,7 +206,7 @@ class AppearanceTest(unittest.TestCase):
             appearance = dict(ui.DEFAULT_APPEARANCE)
             keys = iter(["3", "c", "b", "s"])
             with mock.patch("builtins.input", lambda _: next(keys)), mock.patch("builtins.print"), \
-                    mock.patch.object(main, "timer_next_run", return_value=None):
+                    mock.patch.object(main, "systemd_show", return_value=[{}, {}]):
                 main.pick_appearance(path, appearance, mock.Mock())
             saved = json_loader.load_config(config_path=path)
             self.assertEqual(saved["appearance"], {"theme": "console", "colors": "full", "background": "light"})
@@ -206,7 +222,7 @@ class AppearanceTest(unittest.TestCase):
                 i18n.set_language("en")
                 keys = iter(keys)
                 with mock.patch("builtins.input", lambda _: next(keys)), mock.patch("builtins.print"), \
-                        mock.patch.object(main, "timer_next_run", return_value=None):
+                        mock.patch.object(main, "systemd_show", return_value=[{}, {}]):
                     main.pick_appearance(path, dict(ui.DEFAULT_APPEARANCE), mock.Mock())
                 if saved_language:
                     self.assertEqual(json_loader.load_config(config_path=path)["general"]["language"], saved_language)
@@ -226,7 +242,7 @@ def scripted(lines):
     """Feeds keys and typed answers through the line-based fallback that tests and pipes get."""
     feed = iter(lines)
     return _Patches(mock.patch("builtins.input", lambda _="": next(feed)), mock.patch("builtins.print"),
-                    mock.patch.object(main, "timer_next_run", return_value=None))
+                    mock.patch.object(main, "systemd_show", return_value=[{}, {}]))
 
 
 class _Patches:
@@ -402,7 +418,7 @@ class LiveRenewalTest(unittest.TestCase):
                   "providers": {"ovh": {"cmd_template": "certbot"}},
                   "domains": [{"domain": "a.pl", "email": "x@a.pl"}, {"domain": "b.pl", "email": "x@a.pl"}]}
         out = io.StringIO()
-        with mock.patch.object(main, "cert_days_left", side_effect=[60, 5]),                 mock.patch.object(main, "cert_for_domains", return_value=True),                 mock.patch.object(main, "timer_next_run", return_value=None), mock.patch("sys.stdout", out):
+        with mock.patch.object(main, "cert_days_left", side_effect=[60, 5]),                 mock.patch.object(main, "cert_for_domains", return_value=True),                 mock.patch.object(main, "systemd_show", return_value=[{}, {}]), mock.patch("sys.stdout", out):
             main.cert_auto(config, QUIET, live=True)
         text = ui.ANSI_RE.sub("", out.getvalue())
         self.assertIn("skipped, valid for 60 more days", text)
