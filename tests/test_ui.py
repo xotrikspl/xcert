@@ -1,3 +1,5 @@
+import io
+import logging
 import os
 import sys
 import tempfile
@@ -14,6 +16,9 @@ import main  # noqa: E402
 import ui  # noqa: E402
 
 NOW = datetime(2026, 10, 31, 14, 2)
+QUIET = logging.getLogger("xcert-test-ui")  # real logger: validation records what it logs
+QUIET.propagate = False
+QUIET.addHandler(logging.NullHandler())
 CTX = ui.Context(version="1.3.0", host="srv01", now=NOW, threshold=30, next_run=datetime(2026, 11, 2, 1, 0))
 
 
@@ -41,6 +46,11 @@ EDITOR_CONFIG = {
                  "email": "certificates-and-alerts@example-company.com"},
                 {"domain": "*.example.pl", "email": "admin@example.pl", "provider": "digitalocean-long-name"}],
 }
+CHECKS = [("ok", "config sections", ""),
+          ("ok", "provider ovh", "/opt/xcert/secrets/ovh-with-a-rather-long-file-name.ini"),
+          ("warn", "provider route53", "Insecure permissions on /opt/xcert/secrets/route53.ini: 0o644 "
+                                       "(recommended: 0o600, fix: chmod 600 /opt/xcert/secrets/route53.ini)"),
+          ("err", "post_renewal_cmd, notify_cmd", "general.notify_cmd cannot be parsed: No closing quotation")]
 RESULTS = [("poczta.example.net", True), ("stara-strona.example.org", False), ("api.example.dev", True)]
 TIMINGS = [(0, 41), (45, 160), (210, 37)]
 
@@ -63,6 +73,12 @@ def screens(p):
                            ["ovh", "cloudflare", "route53"], 1, "ovh")
     yield ui.render_report(p, CTX, STATES, "/opt/xcert/logs/a-rather-long-directory-name/xcert_report.json")
     yield ui.render_head(p, CTX, "configuration")
+    yield ui.render_check(p, CTX, CHECKS, "/opt/xcert/config/a-rather-long-directory-name/config.json")
+    yield ui.render_check(p, CTX, CHECKS[:1], "/opt/xcert/config/config.json")
+    for outcome in ("renew", "issue", "skip", "ok", "fail"):
+        yield ui.render_step(p, "a-very-long-subdomain-name.example-company.com", outcome, "digitalocean", 260,
+                             ["⏳ Rate-limit (route53) for a-very-long-subdomain-name.example-company.com. Waiting 75s",
+                              "❌ Failed: a-very-long-subdomain-name.example-company.com (rc=1)"], 79)
 
 
 class RenderTest(unittest.TestCase):
@@ -165,7 +181,7 @@ class AppearanceTest(unittest.TestCase):
 
     def test_unknown_appearance_fails_validation(self):
         config = {"general": {}, "providers": {}, "domains": [], "appearance": {"theme": "neon"}}
-        self.assertFalse(main.validate_config(config, mock.Mock()))
+        self.assertFalse(main.validate_config(config, QUIET))
 
     def test_picker_saves_appearance_without_dropping_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -260,7 +276,7 @@ class EditorTest(unittest.TestCase):
                             "domains": [{"domain": "a.pl", "email": "admin@a.pl", "provider": "ovh"}]}
         json_loader.save_config(config, config_path=path)
         with scripted(keys):
-            main.edit_config_interactive(path, mock.Mock(), dict(ui.DEFAULT_APPEARANCE))
+            main.edit_config_interactive(path, QUIET, dict(ui.DEFAULT_APPEARANCE))
         return json_loader.load_config(config_path=path)
 
     def test_add_remove_and_command_without_typing_numbers(self):
@@ -290,9 +306,46 @@ class MenuTest(unittest.TestCase):
         config = {"general": {}, "providers": {}, "domains": []}
         with scripted(["down", "", "q"]), mock.patch.object(main, "collect_cert_states", return_value=[]), \
                 mock.patch.object(main, "generate_cert_report", return_value="/tmp/r.json") as report:
-            main.interactive_menu(config, mock.Mock(), "config.json", dict(ui.DEFAULT_APPEARANCE))
+            main.interactive_menu(config, QUIET, "config.json", dict(ui.DEFAULT_APPEARANCE))
         report.assert_called_once()  # the cursor starts on "list", one down is "report"
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CheckScreenTest(unittest.TestCase):
+    def test_rows_follow_what_validation_logged(self):
+        config = {"general": {"post_renewal_cmd": "echo 'open"}, "domains": [],
+                  "providers": {"ovh": {"cmd_template": "certbot", "credentials_path": "secrets/ovh.ini"},
+                                "broken": {}}}
+        checks = []
+        self.assertFalse(main.validate_config(config, QUIET, None, checks))
+        rows = {label: (lvl, detail) for lvl, label, detail in checks}
+        self.assertEqual(rows["provider ovh"], ("ok", "secrets/ovh.ini"))
+        self.assertEqual(rows["provider broken"][0], "err")
+        self.assertIn("missing 'cmd_template'", rows["provider broken"][1])
+        self.assertEqual(rows["post_renewal_cmd, notify_cmd"][0], "err")
+        self.assertEqual(rows["language and look"][0], "ok")
+
+    def test_screen_totals_and_no_emoji(self):
+        for theme in ui.THEMES:
+            text = ui.render_check(ui.Painter(theme, "none"), CTX, CHECKS, "/opt/xcert/config/config.json")
+            self.assertIn("errors 1", text, theme)
+            self.assertIn("warnings 1", text, theme)
+        self.assertEqual(ui.note_text("❌ Failed: a.pl (rc=1)"), "Failed: a.pl (rc=1)")
+        self.assertEqual(ui.note_text("⏭️  Skipped a.pl"), "Skipped a.pl")
+
+
+class LiveRenewalTest(unittest.TestCase):
+    def test_live_run_prints_one_line_per_certificate(self):
+        config = {"general": {"logs": 0, "sleep_between_domains_seconds": 0, "renew_threshold_days": 30},
+                  "providers": {"ovh": {"cmd_template": "certbot"}},
+                  "domains": [{"domain": "a.pl", "email": "x@a.pl"}, {"domain": "b.pl", "email": "x@a.pl"}]}
+        out = io.StringIO()
+        with mock.patch.object(main, "cert_days_left", side_effect=[60, 5]),                 mock.patch.object(main, "cert_for_domains", return_value=True),                 mock.patch.object(main, "timer_next_run", return_value=None), mock.patch("sys.stdout", out):
+            main.cert_auto(config, QUIET, live=True)
+        text = ui.ANSI_RE.sub("", out.getvalue())
+        self.assertIn("skipped, valid for 60 more days", text)
+        self.assertIn("renewing via ovh ...", text)
+        self.assertIn("done via ovh", text)

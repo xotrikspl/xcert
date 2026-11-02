@@ -57,7 +57,7 @@ class TranslationTest(unittest.TestCase):
                 self.assertEqual(fields(en), fields(pl))
 
     def test_console_tags_keep_their_width(self):
-        for tag in list(ui.TAGS.values()) + ["  OK  ", " FAIL "]:
+        for tag in list(ui.TAGS.values()) + ["  OK  ", " FAIL ", " WARN "]:
             self.assertEqual(len(i18n.PL[tag]), len(tag), tag)
 
     def test_menu_shortcuts_fit_function_key_bar(self):
