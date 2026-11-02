@@ -20,7 +20,7 @@ from i18n import t
 from json_loader import load_config, save_config
 
 
-VERSION = "1.8.0"
+VERSION = "1.8.1"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 XCERT_ROOT = os.path.dirname(SCRIPT_DIR)
