@@ -32,6 +32,8 @@ PL = {
     "Sun": "ndz",
     "next run {when}": "następny przebieg {when}",
     "timer not active": "timer nieaktywny",
+    "renewal running now": "odnawianie trwa",
+    "last timer run failed ({when}), see {cmd}": "ostatni przebieg timera nieudany ({when}), zobacz {cmd}",
     "no certificates configured": "brak skonfigurowanych certyfikatów",
     "failed:": "nieudane:",
     "check {validate} and the error log, then run {auto}": "sprawdź {validate} i log błędów, potem uruchom {auto}",

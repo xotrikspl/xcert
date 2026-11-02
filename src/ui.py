@@ -172,6 +172,9 @@ class Context:
     now: datetime
     threshold: int = 30
     next_run: Optional[datetime] = None
+    last_run: Optional[datetime] = None  # start of the last timer run
+    last_ok: bool = True
+    running: bool = False  # a timer run is renewing right now
     states: List[CertState] = field(default_factory=list)  # for the console title counters
 
 
@@ -270,9 +273,19 @@ def day(dt: datetime) -> str:
 
 
 def run_label(ctx: Context) -> str:
+    if ctx.running:
+        return t("renewal running now")
     if not ctx.next_run:
         return t("timer not active")
     return t("next run {when}", when=f"{day(ctx.next_run)} {ctx.next_run:%H:%M}")
+
+
+def run_alert(p: Painter, ctx: Context, indent: str = "") -> List[str]:
+    """A red line wherever the timer shows up when its last run failed, so a failure is not missed."""
+    if ctx.last_ok or ctx.last_run is None or ctx.running:
+        return []
+    when = f"{day(ctx.last_run)} {ctx.last_run:%H:%M}"
+    return [indent + p.fg("err", "! " + t("last timer run failed ({when}), see {cmd}", when=when, cmd="xcert --status"))]
 
 
 def duration(seconds: float) -> str:
@@ -399,7 +412,7 @@ def ledger_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -
 
 def ledger_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
     out = _ledger_header(p, ctx)
-    out += ["  " + _counts_line(p, states, ctx), "  " + p.dim(run_label(ctx)), ""]
+    out += ["  " + _counts_line(p, states, ctx), "  " + p.dim(run_label(ctx))] + run_alert(p, ctx, "  ") + [""]
     out += _action_rows(p, items, sel)
     return "\n".join(out + ["", _hint(p)])
 
@@ -522,7 +535,7 @@ def timeline_summary(p: Painter, ctx: Context, results, timings, elapsed: float)
 
 def timeline_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
     out = [row(p.fg("accent", "xCert", bold=True) + "  " + p.dim(ctx.version), p.dim(run_label(ctx))),
-           _strip(p, states, ctx), ""]
+           _strip(p, states, ctx)] + run_alert(p, ctx) + [""]
     # Two columns; left and right arrows jump between them (see nav_step).
     cells = [f"{_mark(p, i == sel)} {p.fg('accent', key, bold=True)} {p.bold(label) if i == sel else label}"
              for i, (key, label, _) in enumerate(items)]
@@ -613,8 +626,8 @@ def console_summary(p: Painter, ctx: Context, results, timings, elapsed: float) 
 def console_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
     meters = [f"  {pad(clip(s.name, 25), 26)}{_meter(p, s, ctx, WIDTH - 38)}" for s in states]
     tail = ["", "  " + p.dim(t("timer")) + "  " + (p.fg("ok", t("active")) + ", " + run_label(ctx) if ctx.next_run
-                                                   else p.fg("err", t("not active"))), "", _hint(p),
-            _fkeys(p, items, sel)]
+                                                   else p.fg("err", t("not active")))] + run_alert(p, ctx, "  ")
+    tail += ["", _hint(p), _fkeys(p, items, sel)]
     return "\n".join([_title(p, ctx, states, "menu"), ""] + _window(p, meters, None, _room(2 + len(tail))) + tail)
 
 
@@ -637,7 +650,7 @@ RENDERERS = {
 
 
 def render_list(p: Painter, ctx: Context, states) -> str:
-    return RENDERERS[p.theme]["list"](p, ctx, states)
+    return "\n".join([RENDERERS[p.theme]["list"](p, ctx, states)] + run_alert(p, ctx))
 
 
 def render_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -> str:
@@ -650,7 +663,7 @@ def render_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = No
 
 
 def render_motd(p: Painter, ctx: Context, states) -> str:
-    return RENDERERS[p.theme]["motd"](p, ctx, states)
+    return "\n".join([RENDERERS[p.theme]["motd"](p, ctx, states)] + run_alert(p, ctx))
 
 
 def render_head(p: Painter, ctx: Context, sub: str) -> str:

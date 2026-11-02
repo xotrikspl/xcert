@@ -775,25 +775,53 @@ def send_failure_notice(config: Dict, logger: logging.Logger) -> bool:
     return True
 
 
-def timer_next_run() -> Optional[datetime]:
-    """Next xcert.timer elapse in local time, or None when systemd or the timer is unavailable."""
+def systemd_show(*units: str) -> List[Dict[str, str]]:
+    """A few `systemctl show` properties per unit; empty dicts where systemd is missing (tests, containers)."""
+    props = "LoadState,ActiveState,UnitFileState,Result,NextElapseUSecRealtime,ExecMainStartTimestamp"
     try:
-        out = subprocess.run(
-            ["systemctl", "show", "xcert.timer", "-p", "NextElapseUSecRealtime", "--value"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout.split()
-        return datetime.strptime(" ".join(out[1:3]), "%Y-%m-%d %H:%M:%S")
-    except (OSError, subprocess.SubprocessError, ValueError):
+        out = subprocess.run(["systemctl", "show", "-p", props, *units],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    blocks = [dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+              for block in out.split("\n\n")] if out else []
+    return (blocks + [{}] * len(units))[:len(units)]
+
+
+def systemd_time(value: str) -> Optional[datetime]:
+    """'Mon 2026-11-03 01:12:03 CET' as a local datetime, None when empty or unparsable."""
+    try:
+        return datetime.strptime(" ".join(value.split()[1:3]), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
         return None
 
 
+def automation() -> Dict:
+    """What the timer does: next run, start and result of the last run, whether a run is going on now."""
+    timer, service = systemd_show("xcert.timer", "xcert.service")
+    return {
+        "loaded": timer.get("LoadState") == "loaded",
+        "active": timer.get("ActiveState") == "active",
+        "enabled": timer.get("UnitFileState") == "enabled",
+        "next_run": systemd_time(timer.get("NextElapseUSecRealtime", "")) if timer.get("ActiveState") == "active"
+        else None,
+        "last_run": systemd_time(service.get("ExecMainStartTimestamp", "")),
+        "last_ok": service.get("Result", "success") == "success",
+        "running": service.get("ActiveState") == "activating",
+    }
+
+
 def build_ui_context(config: Dict) -> ui.Context:
+    auto = automation()
     return ui.Context(
         version=VERSION,
         host=socket.gethostname().split(".")[0],
         now=datetime.now(),
         threshold=int(config.get("general", {}).get("renew_threshold_days", 30)),
-        next_run=timer_next_run(),
+        next_run=auto["next_run"],
+        last_run=auto["last_run"],
+        last_ok=auto["last_ok"],
+        running=auto["running"],
     )
 
 
