@@ -458,6 +458,7 @@ def cert_auto(
 
     results: List[Tuple[str, bool]] = []
     timings: List[Tuple[float, float]] = []
+    skips: List[str] = []  # labels left alone because they are still valid, kept apart from renewals
     started = time.monotonic()
     shared = shared_cert_names(tasks)
     if live:
@@ -493,6 +494,8 @@ def cert_auto(
             results.append((label, success))
             timings.append((task_start - started, time.monotonic() - task_start))
             outcome = "skip" if skipped and success else "ok" if success else "fail"
+            if outcome == "skip":
+                skips.append(label)
             step(ui.render_step(painter, name, outcome, task["provider"], time.monotonic() - task_start,
                                 [r.getMessage() for r in rec.records[mark:]], days))
 
@@ -502,7 +505,8 @@ def cert_auto(
                 time.sleep(sleep_between)
 
     print()
-    print(ui.render_summary(painter, build_ui_context(config), results, timings, time.monotonic() - started))
+    print(ui.render_summary(painter, build_ui_context(config), results, timings, time.monotonic() - started,
+                            skips))
     return results
 
 # ======================

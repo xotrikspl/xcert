@@ -63,6 +63,8 @@ PL = {
     "done": "gotowe",
     "failed": "błąd",
     "done {n}": "gotowe {n}",
+    "skipped {n}": "pominięte {n}",
+    "skipped": "pominięty",
     # Console (tags are exactly 6 characters wide)
     "  OK  ": "  OK  ",
     "RENEW ": "ODNÓW ",

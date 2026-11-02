@@ -403,10 +403,25 @@ def ledger_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
     return "\n".join(out)
 
 
-def ledger_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -> str:
-    ok = sum(1 for _, s in results if s)
-    left = p.fg("ok", t("renewed {n}", n=ok)) + "   " + (p.fg("err", t("failed {n}", n=len(results) - ok))
-                                                          if ok < len(results) else p.dim(t("failed {n}", n=0)))
+def tally(results, skipped) -> Tuple[int, int, int]:
+    """Renewed, skipped (still valid) and failed certificates of a run."""
+    failed = sum(1 for _, ok in results if not ok)
+    skips = sum(1 for label, ok in results if ok and label in skipped)
+    return len(results) - failed - skips, skips, failed
+
+
+def _totals(p: Painter, results, skipped, sep: str) -> str:
+    renewed, skips, failed = tally(results, skipped)
+    text = t("done {n}", n=renewed) if p.theme == "timeline" else t("renewed {n}", n=renewed)
+    parts = [p.fg("ok", text) if renewed else p.dim(text)]
+    if skips:
+        parts.append(p.dim(t("skipped {n}", n=skips)))
+    parts.append(p.fg("err", t("failed {n}", n=failed)) if failed else p.dim(t("failed {n}", n=0)))
+    return sep.join(parts)
+
+
+def ledger_summary(p: Painter, ctx: Context, results, timings, elapsed: float, skipped=()) -> str:
+    left = _totals(p, results, skipped, "   ")
     return "\n".join([_ledger_rule(p), row(left, p.dim(duration(elapsed)))] + _failures(p, results))
 
 
@@ -518,7 +533,7 @@ def timeline_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
     return "\n".join(out)
 
 
-def timeline_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -> str:
+def timeline_summary(p: Painter, ctx: Context, results, timings, elapsed: float, skipped=()) -> str:
     cols = 40
     scale = max(elapsed, 1.0) / cols
     out = [p.dim(t("run took {elapsed}, 1 char = {scale}", elapsed=duration(elapsed), scale=duration(scale)))]
@@ -526,10 +541,10 @@ def timeline_summary(p: Painter, ctx: Context, results, timings, elapsed: float)
         lead = min(cols - 1, int(start / scale))
         bar = "█" * max(1, min(cols - lead, round(length / scale))) if length >= 1 else "·"
         out.append("  " + pad(clip(label, 24), 25) + " " * lead + p.fg("ok" if ok else "err", bar)
-                   + " " * max(1, cols - lead - len(bar) + 1) + (p.fg("ok", t("done")) if ok else p.fg("err", t("failed"))))
-    ok = sum(1 for _, s in results if s)
-    out += ["", p.fg("ok", t("done {n}", n=ok)) + "  " + (p.fg("err", t("failed {n}", n=len(results) - ok))
-                                                          if ok < len(results) else p.dim(t("failed {n}", n=0)))]
+                   + " " * max(1, cols - lead - len(bar) + 1)
+                   + (p.dim(t("skipped")) if ok and label in skipped else p.fg("ok", t("done")) if ok
+                      else p.fg("err", t("failed"))))
+    out += ["", _totals(p, results, skipped, "  ")]
     return "\n".join(out + _failures(p, results))
 
 
@@ -613,11 +628,14 @@ def console_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
     return "\n".join(out)
 
 
-def console_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -> str:
-    ok = sum(1 for _, s in results if s)
-    segs: List[Optional[Tuple[str, str, bool]]] = [("ok", " " + t("renewed {n}", n=ok) + " ", False)]
-    if ok < len(results):
-        segs.append(("err", " " + t("failed {n}", n=len(results) - ok) + " ", False))
+def console_summary(p: Painter, ctx: Context, results, timings, elapsed: float, skipped=()) -> str:
+    renewed, skips, failed = tally(results, skipped)
+    segs: List[Optional[Tuple[str, str, bool]]] = [("ok" if renewed else "bar", " " + t("renewed {n}", n=renewed) + " ",
+                                                    False)]
+    if skips:
+        segs.append(("bar", " " + t("skipped {n}", n=skips) + " ", False))
+    if failed:
+        segs.append(("err", " " + t("failed {n}", n=failed) + " ", False))
     segs += [None, ("bar", f" {duration(elapsed)} ", False)]
     # Per-certificate lines are already on screen (live run) or in the log above.
     return "\n".join([_bar(p, segs)] + _failures(p, results, "  "))
@@ -653,8 +671,8 @@ def render_list(p: Painter, ctx: Context, states) -> str:
     return "\n".join([RENDERERS[p.theme]["list"](p, ctx, states)] + run_alert(p, ctx))
 
 
-def render_summary(p: Painter, ctx: Context, results, timings, elapsed: float) -> str:
-    return RENDERERS[p.theme]["summary"](p, ctx, results, timings, elapsed)
+def render_summary(p: Painter, ctx: Context, results, timings, elapsed: float, skipped=()) -> str:
+    return RENDERERS[p.theme]["summary"](p, ctx, results, timings, elapsed, set(skipped))
 
 
 def render_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
