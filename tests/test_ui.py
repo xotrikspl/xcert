@@ -163,6 +163,21 @@ class AppearanceTest(unittest.TestCase):
             self.assertEqual(appearance["theme"], "console")
             self.assertFalse(os.path.exists(path + ".tmp"))
 
+    def test_picker_switches_language_and_reverts_on_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.json")
+            json_loader.save_config({"general": {"logs": 0}}, config_path=path)
+            for keys, saved_language, live_language in ((["l", "s"], "pl", "pl"), (["l", "q"], None, "en")):
+                i18n.set_language("en")
+                keys = iter(keys)
+                with mock.patch("builtins.input", lambda _: next(keys)), mock.patch("builtins.print"), \
+                        mock.patch.object(main, "timer_next_run", return_value=None):
+                    main.pick_appearance(path, dict(ui.DEFAULT_APPEARANCE), mock.Mock())
+                if saved_language:
+                    self.assertEqual(json_loader.load_config(config_path=path)["general"]["language"], saved_language)
+                self.assertEqual(i18n.current_language(), live_language)
+        i18n.set_language("en")
+
 
 if __name__ == "__main__":
     unittest.main()

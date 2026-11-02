@@ -145,6 +145,27 @@ class Output(unittest.TestCase):
         self.assertEqual(main.Colors.RED, "\033[31m")
 
 
+class FailureNotice(unittest.TestCase):
+    def test_notice_goes_to_notify_cmd_on_stdin(self):
+        config = {"general": {"notify_cmd": "mail -s 'xCert failed' admin@example.com"}}
+        sent = mock.Mock(returncode=0, stderr="")
+        with mock.patch.object(main, "journal_tail", return_value="Failed: example.com (rc=1)"), \
+                mock.patch.object(main.subprocess, "run", return_value=sent) as run:
+            self.assertTrue(main.send_failure_notice(config, LOGGER))
+        cmd, kwargs = run.call_args[0][0], run.call_args[1]
+        self.assertEqual(cmd, ["mail", "-s", "xCert failed", "admin@example.com"])
+        self.assertIn("certificate renewal failed", kwargs["input"])
+        self.assertIn("Failed: example.com (rc=1)", kwargs["input"])
+
+    def test_failed_or_missing_notify_cmd(self):
+        with mock.patch.object(main.subprocess, "run") as run:
+            self.assertTrue(main.send_failure_notice({"general": {}}, LOGGER))
+            run.assert_not_called()
+        with mock.patch.object(main, "journal_tail", return_value=""), \
+                mock.patch.object(main.subprocess, "run", return_value=mock.Mock(returncode=1, stderr="no mta")):
+            self.assertFalse(main.send_failure_notice({"general": {"notify_cmd": "mail x"}}, LOGGER))
+
+
 class Report(unittest.TestCase):
     def test_report_follows_grouped_certificates(self):
         with tempfile.TemporaryDirectory() as tmp:
