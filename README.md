@@ -122,6 +122,8 @@ Every command accepts `--config PATH` (default: `config/config.json` in the repo
 
 `--menu` and `--edit-config` work with the arrow keys and Enter; each item's letter is a shortcut and `q` or Esc goes back. Screens redraw in place instead of scrolling. In the editor, Enter on a domain lists what you can do with it (change domain or email, change provider, remove), and providers are picked from a list, so only domains, emails and the post-renewal command are typed. Without a terminal (pipes, scripts) both read one line per choice instead.
 
+On a terminal, `--auto` shows one progress line per certificate (skipped, renewing, done or failed, with the reason) and `--validate-config` shows one row per section and provider, both in the chosen look. The full log still goes to the log files; add `--debug` to see it on screen instead. Under systemd, cron and pipes both commands print the plain log as before.
+
 ## Appearance
 
 Three looks, all within 80 columns and without emoji so columns stay aligned in any terminal:
