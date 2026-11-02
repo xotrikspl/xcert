@@ -169,6 +169,23 @@ PL = {
     "Remove {domain}? (y/N) ": "Usunąć {domain}? (t/N) ",
     "Discard changes? (y/N) ": "Odrzucić zmiany? (t/N) ",
     "Command after renewal, - clears it [Enter = {value}]: ": "Polecenie po odnowieniu, - czyści [Enter = {value}]: ",
+    # Check screen
+    " WARN ": "UWAGA ",
+    "config sections": "sekcje configu",
+    "selected domains": "wybrane domeny",
+    "provider {name}": "dostawca {name}",
+    "domains and emails ({n})": "domeny i e-maile ({n})",
+    "certificate names": "nazwy certyfikatów",
+    "language and look": "język i wygląd",
+    "errors {n}": "błędy {n}",
+    "warnings {n}": "ostrzeżenia {n}",
+    "all checks passed": "wszystko w porządku",
+    # Renewal progress
+    "skipped, valid for {n} more days": "pominięty, ważny jeszcze {n} dni",
+    "renewing via {provider} ...": "odnawiam przez {provider} ...",
+    "issuing via {provider} ...": "wystawiam przez {provider} ...",
+    "done via {provider}": "odnowiono przez {provider}",
+    "pause {n} s before the next certificate": "pauza {n} s przed następnym certyfikatem",
     # --help
     "xCert - Let's Encrypt certificate automation with 13+ DNS providers":
         "xCert - automatyzacja certyfikatów Let's Encrypt dla 13+ dostawców DNS",

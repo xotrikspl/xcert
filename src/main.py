@@ -9,6 +9,7 @@ import socket
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -421,11 +422,15 @@ def cert_auto(
     logger: logging.Logger,
     dry_run: bool = False,
     painter: Optional[ui.Painter] = None,
+    live: bool = False,
 ) -> Optional[List[Tuple[str, bool]]]:
+    """Renews every due certificate. `live` draws one progress line per certificate instead of console logs."""
     domains_list = config.get("domains", [])
     general = config["general"]
     providers = config["providers"]
     sleep_between = int(general.get("sleep_between_domains_seconds", 10))
+    threshold = int(general.get("renew_threshold_days", 30))
+    painter = painter or ui.Painter()
 
     if not domains_list:
         logger.warning("No domains configured in config.json")
@@ -435,53 +440,124 @@ def cert_auto(
     if len(tasks) < len(domains_list):
         logger.info(f"Grouped {len(domains_list)} domains into {len(tasks)} certbot tasks.")
 
+    def step(text: str, final: bool = True) -> None:
+        if live:
+            # \r and erase-line let the finished line overwrite its "working" version.
+            sys.stdout.write("\r\033[K" + text + ("\n" if final else ""))
+            sys.stdout.flush()
+
     results: List[Tuple[str, bool]] = []
     timings: List[Tuple[float, float]] = []
     started = time.monotonic()
     shared = shared_cert_names(tasks)
-    for idx, task in enumerate(tasks):
-        task_start = time.monotonic()
-        if cert_name(task["domains"][0]) in shared:
-            # Two groups writing one lineage would swap its domain list on every run.
-            logger.error(f"❌ Skipped {', '.join(task['domains'])}: certificate name "
-                         f"'{cert_name(task['domains'][0])}' is shared with another group")
-            results.append((", ".join(task["domains"]), False))
-            timings.append((task_start - started, 0.0))
-            continue
-        success = cert_for_domains(
-            task["domains"],
-            task["email"],
-            task["provider"],
-            general,
-            providers,
-            logger,
-            dry_run=dry_run,
-        )
-        results.append((", ".join(task["domains"]), success))
-        timings.append((task_start - started, time.monotonic() - task_start))
+    with recording(logger, quiet=live) as rec:
+        for idx, task in enumerate(tasks):
+            task_start = time.monotonic()
+            label = ", ".join(task["domains"])
+            name = cert_name(task["domains"][0])
+            mark = len(rec.records)
+            if name in shared:
+                # Two groups writing one lineage would swap its domain list on every run.
+                logger.error(f"❌ Skipped {label}: certificate name '{name}' is shared with another group")
+                results.append((label, False))
+                timings.append((task_start - started, 0.0))
+                step(ui.render_step(painter, name, "fail", task["provider"], 0,
+                                    [r.getMessage() for r in rec.records[mark:]]))
+                continue
+            days = cert_days_left(task["domains"][0], general)
+            skipped = threshold > 0 and days is not None and days > threshold
+            if not skipped:
+                step(ui.render_step(painter, name, "renew" if days is not None else "issue", task["provider"]), False)
+            success = cert_for_domains(
+                task["domains"],
+                task["email"],
+                task["provider"],
+                general,
+                providers,
+                logger,
+                dry_run=dry_run,
+            )
+            results.append((label, success))
+            timings.append((task_start - started, time.monotonic() - task_start))
+            outcome = "skip" if skipped and success else "ok" if success else "fail"
+            step(ui.render_step(painter, name, outcome, task["provider"], time.monotonic() - task_start,
+                                [r.getMessage() for r in rec.records[mark:]], days))
 
-        if idx < len(tasks) - 1 and sleep_between > 0:
-            logger.info(f"Sleeping {sleep_between}s before next domain...")
-            time.sleep(sleep_between)
+            if idx < len(tasks) - 1 and sleep_between > 0 and not skipped:
+                logger.info(f"Sleeping {sleep_between}s before next domain...")
+                step(painter.dim("  " + t("pause {n} s before the next certificate", n=sleep_between)), False)
+                time.sleep(sleep_between)
 
     print()
-    print(ui.render_summary(painter or ui.Painter(), build_ui_context(config), results, timings,
-                            time.monotonic() - started))
+    print(ui.render_summary(painter, build_ui_context(config), results, timings, time.monotonic() - started))
     return results
 
 # ======================
 # CONFIG VALIDATION
 # ======================
+class Recorder(logging.Handler):
+    """Keeps warnings and errors logged while it is attached, for the on-screen check and renewal lines."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.WARNING)
+        self.records: List[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@contextmanager
+def recording(logger: logging.Logger, quiet: bool = False):
+    """Attaches a Recorder; `quiet` hides the console log meanwhile, because a screen shows the outcome."""
+    recorder = Recorder()
+    console = [h for h in getattr(logger, "handlers", []) if type(h) is logging.StreamHandler]
+    levels = [h.level for h in console]
+    logger.addHandler(recorder)
+    if quiet:
+        for h in console:
+            h.setLevel(logging.CRITICAL + 1)
+    try:
+        yield recorder
+    finally:
+        logger.removeHandler(recorder)
+        for h, lvl in zip(console, levels):
+            h.setLevel(lvl)
+
+
+def screen_mode(args: Optional[argparse.Namespace] = None) -> bool:
+    """Themed check and renewal screens replace console logs on a terminal, unless --debug asks for logs."""
+    return sys.stdout.isatty() and not getattr(args, "debug", False)
+
+
 def validate_config(
     config: Dict,
     logger: logging.Logger,
     domain_filters: Optional[List[str]] = None,
+    checks: Optional[List[Tuple[str, str, str]]] = None,
 ) -> bool:
+    """Checks config and credentials; with `checks`, also fills (level, label, detail) rows for the screen."""
+    with recording(logger) as rec:
+        return _validate(config, logger, domain_filters, rec, checks if checks is not None else [])
+
+
+def _validate(config: Dict, logger: logging.Logger, domain_filters: Optional[List[str]],
+              rec: Recorder, checks: List[Tuple[str, str, str]]) -> bool:
     valid = True
+    mark = 0
+
+    def section(label: str, detail: str = "") -> None:
+        """One screen row from what was logged since the previous row."""
+        nonlocal mark
+        new = rec.records[mark:]
+        mark = len(rec.records)
+        lvl = "err" if any(r.levelno >= logging.ERROR for r in new) else "warn" if new else "ok"
+        checks.append((lvl, label, new[-1].getMessage() if new else detail))
 
     if "domains" not in config or "providers" not in config or "general" not in config:
         logger.error("Missing required sections: 'domains', 'providers', or 'general'")
+        section(t("config sections"))
         return False
+    section(t("config sections"))
 
     providers = config.get("providers", {})
     general = config.get("general", {})
@@ -505,6 +581,7 @@ def validate_config(
 
     if normalized_filters and not selected_domains:
         logger.error(f"None of the specified domains found in config: {', '.join(sorted(normalized_filters))}")
+        section(t("selected domains"))
         return False
 
     providers_to_check = providers.keys() if normalized_filters is None else selected_providers
@@ -514,13 +591,12 @@ def validate_config(
         if provider is None:
             logger.error(f"Unknown provider '{provider_name}' referenced in config")
             valid = False
-            continue
-        if not provider.get("cmd_template"):
+        elif not provider.get("cmd_template"):
             logger.error(f"Provider '{provider_name}': missing 'cmd_template'")
             valid = False
-            continue
-        if not validate_provider_runtime(provider_name, provider, logger):
+        elif not validate_provider_runtime(provider_name, provider, logger):
             valid = False
+        section(t("provider {name}", name=provider_name), (provider or {}).get("credentials_path") or "")
 
     for entry in selected_domains:
         domain = entry.get("domain", "")
@@ -536,11 +612,13 @@ def validate_config(
         if provider_name not in providers:
             logger.error(f"Unknown provider '{provider_name}' for domain {domain}")
             valid = False
+    section(t("domains and emails ({n})", n=len(selected_domains)))
 
     for name in sorted(shared_cert_names(build_cert_tasks(selected_domains, default_provider))):
         logger.error(f"Certificate name '{name}' is used by more than one group: "
                      f"give these domains the same email and provider")
         valid = False
+    section(t("certificate names"))
 
     for key in ("post_renewal_cmd", "notify_cmd"):
         try:
@@ -548,6 +626,7 @@ def validate_config(
         except ValueError as e:
             logger.error(f"general.{key} cannot be parsed: {e}")
             valid = False
+    section("post_renewal_cmd, notify_cmd", general.get("post_renewal_cmd") or "")
 
     language = general.get("language")
     if language is not None and language not in i18n.LANGUAGES:
@@ -560,6 +639,7 @@ def validate_config(
         if value is not None and value not in allowed:
             logger.error(f"appearance.{key} = '{value}' is not one of: {', '.join(allowed)}")
             valid = False
+    section(t("language and look"))
 
     scope = "entire config" if normalized_filters is None else f"selected domains ({len(selected_domains)})"
     if valid:
@@ -568,6 +648,16 @@ def validate_config(
         logger.error(f"❌ Validation of {scope} found errors")
 
     return valid
+
+
+def show_check(painter: ui.Painter, config: Dict, logger: logging.Logger, path: str,
+               domain_filters: Optional[List[str]] = None) -> bool:
+    """Runs the check with console logs hidden and draws its outcome in the current look."""
+    checks: List[Tuple[str, str, str]] = []
+    with recording(logger, quiet=True):
+        ok = validate_config(config, logger, domain_filters, checks)
+    ui.draw(ui.render_check(painter, build_ui_context(config), checks, path))
+    return ok
 
 
 def prompt_domain_filters(config: Dict, logger: logging.Logger) -> List[str]:
@@ -963,8 +1053,7 @@ def edit_config_interactive(config_path: str, logger: logging.Logger,
             logger.info(f"Logging {'enabled' if general['logs'] == 1 else 'disabled'}.")
 
         elif key == "v":
-            ui.draw(ui.render_head(painter, ctx, t("checking")))
-            validate_config(config, logger)
+            show_check(painter, config, logger, config_path)
             ui.pause(painter)
 
         elif key == "s":
@@ -1025,7 +1114,7 @@ def interactive_menu(config: Dict, logger: logging.Logger, config_path: str,
 
         if key == "o":
             ui.draw(ui.render_head(painter, ctx, t("renewal")))
-            cert_auto(config, logger, painter=painter)
+            cert_auto(config, logger, painter=painter, live=screen_mode())
         elif key == "w":
             ui.draw(ui.render_head(painter, ctx, t("issue")))
             domain = ask(t("Domain: "))
@@ -1059,7 +1148,7 @@ def interactive_menu(config: Dict, logger: logging.Logger, config_path: str,
         elif key == "s":
             ui.draw(ui.render_head(painter, ctx, t("checking")))
             selected = prompt_domain_filters(config, logger)
-            validate_config(config, logger, selected or None)
+            show_check(painter, config, logger, config_path, selected or None)
         elif key == "t":
             pick_appearance(config_path, appearance, logger)
             continue
@@ -1170,11 +1259,15 @@ def main() -> None:
         return
 
     if args.validate_config:
-        ok = validate_config(config, logger, args.validate_domain)
+        if screen_mode(args):
+            ok = show_check(make_painter(appearance), config, logger, config_path, args.validate_domain)
+        else:
+            ok = validate_config(config, logger, args.validate_domain)
         sys.exit(0 if ok else 1)
 
     if args.auto:
-        results = cert_auto(config, logger, dry_run=args.dry_run, painter=make_painter(appearance))
+        results = cert_auto(config, logger, dry_run=args.dry_run, painter=make_painter(appearance),
+                            live=screen_mode(args))
         if not results:
             sys.exit(1)
         failures = [name for name, success in results if not success]

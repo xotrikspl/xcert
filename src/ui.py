@@ -579,9 +579,8 @@ def console_summary(p: Painter, ctx: Context, results, timings, elapsed: float) 
     if ok < len(results):
         segs.append(("err", " " + t("failed {n}", n=len(results) - ok) + " ", False))
     segs += [None, ("bar", f" {duration(elapsed)} ", False)]
-    lines = [" " + _tag(p, "ok" if s else "err", t("  OK  ") if s else t(" FAIL ")) + " " + label
-             for label, s in results]
-    return "\n".join(lines + [_bar(p, segs)] + _failures(p, results, "  "))
+    # Per-certificate lines are already on screen (live run) or in the log above.
+    return "\n".join([_bar(p, segs)] + _failures(p, results, "  "))
 
 
 def console_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
@@ -746,6 +745,87 @@ def render_report(p: Painter, ctx: Context, states: Sequence[CertState], path: s
         return "\n".join([head, _bar(p, segs + [None])] + lines)
     head = p.fg("ok", "✓") + " " + saved + "  " + p.dim(clip(path, INNER - len(saved) - 4))
     return "\n".join(([_strip(p, states, ctx)] if p.theme == "timeline" else []) + [head] + lines)
+
+
+NOTE_JUNK_RE = re.compile(r"[←-⯿️\U0001F000-\U0001FFFF]+\s*")
+
+
+def note_text(message: str) -> str:
+    """A log message fit for a screen row: emoji dropped, since terminals disagree on their width."""
+    return NOTE_JUNK_RE.sub("", message).strip()
+
+
+CHECK_MARKS = {"ok": "✓", "warn": "!", "err": "✗"}
+
+
+def render_check(p: Painter, ctx: Context, checks: Sequence[Tuple[str, str, str]], path: str) -> str:
+    """Outcome of --validate-config: one row per section, provider or setting, then the totals."""
+    errors = sum(1 for lvl, _, _ in checks if lvl == "err")
+    warnings = sum(1 for lvl, _, _ in checks if lvl == "warn")
+    tags = {"ok": t("  OK  "), "warn": t(" WARN "), "err": t(" FAIL ")}
+    if p.theme == "console":
+        out = [_bar(p, [("bar", f" xCert {ctx.version} ", True), ("bar", f" {t('checking')} ", False), None,
+                        ("bar", f" {clip(path, 40)} ", False)])]
+        for lvl, label, detail in checks:
+            line = " " + _tag(p, lvl, tags[lvl]) + " " + label
+            if detail:
+                line += ": " + (p.dim if lvl == "ok" else lambda s: p.fg(lvl, s))(
+                    clip(note_text(detail), WIDTH - 12 - len(label)))
+            out.append(line)
+        segs: List[Optional[Tuple[str, str, bool]]] = [
+            ("err" if errors else "ok", " " + t("errors {n}", n=errors) + " ", False),
+            ("warn" if warnings else "bar", " " + t("warnings {n}", n=warnings) + " ", False), None]
+        return "\n".join(out + [_bar(p, segs)])
+
+    if p.theme == "timeline":
+        out = _head(p, ctx, t("checking")) + ["", p.fg("accent", "config.json", bold=True) + " " + p.dim(clip(path, 60))]
+        lead = [p.dim("└─" if i == len(checks) - 1 else "├─") for i in range(len(checks))]
+    else:
+        out = _head(p, ctx, t("checking"))
+        lead = [" "] * len(checks)
+    width = min(38, max((len(label) for _, label, _ in checks), default=0))
+    for (lvl, label, detail), branch in zip(checks, lead):
+        text = clip(note_text(detail), INNER - 9 - width)
+        line = f" {branch} {p.fg(lvl, CHECK_MARKS[lvl])}  {pad(clip(label, width), width)} "
+        out.append((line + (p.dim(text) if lvl == "ok" else p.fg(lvl, text))).rstrip())
+    if errors or warnings:
+        total = (p.fg("err", t("errors {n}", n=errors)) if errors else p.dim(t("errors {n}", n=0))) + "   " \
+            + (p.fg("warn", t("warnings {n}", n=warnings)) if warnings else p.dim(t("warnings {n}", n=0)))
+    else:
+        total = p.fg("ok", t("all checks passed"))
+    return "\n".join(out + ([_ledger_rule(p)] if p.theme == "ledger" else [""]) + [total])
+
+
+def render_step(p: Painter, name: str, outcome: str, provider: str = "", seconds: float = 0,
+                notes: Sequence[str] = (), days: Optional[int] = None) -> str:
+    """One certificate of a renewal run: `renew`/`issue` while certbot works, then `skip`, `ok` or `fail`."""
+    if outcome == "skip":
+        what = t("skipped, valid for {n} more days", n=days)
+    elif outcome in ("renew", "issue"):
+        what = t("renewing via {provider} ...", provider=provider) if outcome == "renew" \
+            else t("issuing via {provider} ...", provider=provider)
+    elif outcome == "ok":
+        what = t("done via {provider}", provider=provider)
+    else:
+        what = t("failed")
+    notes = [clip(note_text(n), INNER - 30) for n in notes[-2:]]
+    if p.theme == "console":
+        tag = {"skip": ("dim", "  --  "), "renew": ("info", "  ..  "), "issue": ("info", "  ..  "),
+               "ok": ("ok", t("  OK  ")), "fail": ("err", t(" FAIL "))}[outcome]
+        line = " " + _tag(p, *tag) + " " + clip(name, 24) + ": " + (p.dim(what) if outcome == "skip" else what)
+        if outcome == "ok":
+            line += " " + p.dim(f"({duration(seconds)})")
+        return "\n".join([line] + [" " * 10 + (p.fg("err", n) if outcome == "fail" else p.dim(n)) for n in notes])
+    head = "  " + pad(clip(name, 27), 28)
+    if outcome == "skip":
+        line = head + p.dim(what)
+    elif outcome == "ok":
+        line = head + what + "  " + p.fg("ok", t("done"), bold=True) + " " + p.dim(duration(seconds))
+    elif outcome == "fail":
+        line = head + p.fg("err", what, bold=True)
+    else:
+        line = head + what
+    return "\n".join([line] + [" " * 30 + (p.fg("err", n) if outcome == "fail" else p.dim(n)) for n in notes])
 
 
 # ======================
