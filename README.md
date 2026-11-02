@@ -124,7 +124,7 @@ xcert --auto --debug           # verbose logging, combines with any flag
 
 Every command accepts `--config PATH` (default: `config/config.json` in the repository), `--lang en|pl` and the appearance overrides below. `--auto` exits with code 1 when any certificate fails, so the systemd unit shows up as failed. `--status`, `--validate-config`, `--install` and `--update` exit with 1 when a row shows an error.
 
-`--menu` and `--edit-config` work with the arrow keys and Enter; each item's letter is a shortcut and `q` or Esc goes back. Screens redraw in place instead of scrolling. In the editor, Enter on a domain lists what you can do with it (change domain or email, change provider, remove), and providers are picked from a list, so only domains, emails and the post-renewal command are typed. Without a terminal (pipes, scripts) both read one line per choice instead.
+`--menu` and `--edit-config` work with the arrow keys and Enter; each item's letter is a shortcut and `q` or Esc goes back. Screens redraw in place instead of scrolling. In the editor, Enter on a domain lists what you can do with it (change domain or email, change provider, remove), and providers are picked from a list, so only domains, emails and the two commands (after renewal, `a` for the failure notice) are typed. Without a terminal (pipes, scripts) both read one line per choice instead.
 
 On a terminal, `--auto` and `--domain` show one progress line per certificate (skipped, renewing, done or failed, with the reason) and `--status`, `--validate-config`, `--install` and `--update` show one row per check, all in the chosen look; the menu's Issue and Check use the same screens. The full log still goes to the log files; add `--debug` to see it on screen instead. Under systemd, cron and pipes both commands print the plain log as before.
 
@@ -270,7 +270,7 @@ When `xcert.service` fails, whether a certificate failed, `post_renewal_cmd` fai
 "notify_cmd": "curl -fsS -H 'Title: xCert failed' --data-binary @- https://ntfy.sh/my-topic"
 ```
 
-Use `--data-binary @-` with curl; plain `-d @-` drops the line breaks. Run `xcert --notify-failure` by hand to send a test notice. With `notify_cmd` empty nothing is sent.
+Use `--data-binary @-` with curl; plain `-d @-` drops the line breaks. Set it in the config editor (`xcert --edit-config` or menu `e`, then `a`) or in `config.json`; run `xcert --notify-failure` by hand to send a test notice. With `notify_cmd` empty nothing is sent.
 
 ## Status at SSH login
 
