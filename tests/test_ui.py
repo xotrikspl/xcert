@@ -166,6 +166,51 @@ class PlanTest(unittest.TestCase):
         ctx = ui.Context("1.3.0", "srv01", NOW)
         self.assertEqual(ui.plan_runs(STATES, ctx), [])
 
+    def test_board_orders_certificates_by_the_run_that_renews_them(self):
+        rows = ui.render_list(ui.Painter("board", "none"), CTX, STATES).splitlines()
+        longest_first = sorted((s.name[:20] for s in STATES), key=len, reverse=True)  # example.pl is in sklep.example.pl
+        names = [next((name for name in longest_first if name in line), None) for line in rows if "+ " not in line]
+        self.assertEqual([n for n in names if n], ["stara-strona.example", "poczta.example.net", "api.example.dev",
+                                                   "sklep.example.pl", "example.pl", "a-very-long-subdomai"])
+        self.assertIn("Mon 30.11", next(line for line in rows if "sklep.example.pl" in line))
+
+
+class NewLooksTest(unittest.TestCase):
+    def test_calendar_marks_expiry_days_and_today_without_colour(self):
+        text = ui.render_list(ui.Painter("calendar", "none"), CTX, STATES)
+        self.assertIn("November 2026", text)
+        self.assertIn("12*", text)  # poczta.example.net expires on 12.11
+        self.assertIn("27*", text)  # sklep.example.pl on 27.12
+        self.assertNotIn("31<", text)  # 31.10 has under a week left, so the grid starts in November
+        first = ui._month_grid(ui.Painter("calendar", "none"), datetime(2026, 10, 1), STATES, CTX)
+        self.assertIn("28*", "".join(first))  # an expired certificate still marks its day
+        self.assertIn("31<", "".join(first))
+
+    def test_tree_groups_certificates_under_their_provider(self):
+        lines = ui.render_list(ui.Painter("tree", "none"), CTX, STATES).splitlines()
+        ovh = lines.index(next(line for line in lines if line.startswith("ovh")))
+        self.assertTrue(lines[ovh + 1].startswith("├─ ● example.pl"))
+        self.assertTrue(lines[ovh + 2].startswith("│  └─ *.example.pl"))
+        self.assertTrue(lines[ovh + 4].startswith("└─ ● a-very-long"))
+
+    def test_cards_put_the_most_urgent_first_and_fit_the_screen(self):
+        text = ui.render_list(ui.Painter("cards", "none"), CTX, STATES)
+        self.assertLess(text.index("stara-strona"), text.index("poczta"))
+        self.assertLess(text.index("poczta"), text.index("sklep"))
+        try:
+            ui.set_screen(132)
+            wide = ui.render_list(ui.Painter("cards", "none"), CTX, STATES).splitlines()
+            self.assertEqual(sum(line.count("╭─") for line in wide[2:3]), 3)  # three cards a row on 132 columns
+        finally:
+            ui.set_screen(80)
+
+    def test_every_look_has_its_own_palette_and_renderers(self):
+        for theme in ui.THEMES:
+            self.assertEqual(set(ui.PALETTES[theme]), set(ui.BACKGROUNDS), theme)
+            self.assertIn(theme, ui.ANSI_ACCENT)
+            self.assertEqual(set(ui.RENDERERS[theme]), {"list", "summary", "menu", "motd"}, theme)
+        self.assertEqual(ui.PICKER_ROWS[:len(ui.THEMES)], ("1", "2", "3", "4", "5", "6", "7"))
+
 
 class ColorModeTest(unittest.TestCase):
     tty = SimpleNamespace(isatty=lambda: True)
@@ -242,6 +287,14 @@ class AppearanceTest(unittest.TestCase):
             with scripted(["down", "down", ""]):
                 main.pick_appearance(path, dict(ui.DEFAULT_APPEARANCE), mock.Mock())
             self.assertEqual(json_loader.load_config(config_path=path)["appearance"]["theme"], "console")
+
+    def test_picker_digit_picks_one_of_the_newer_looks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.json")
+            json_loader.save_config({"general": {"logs": 0}}, config_path=path)
+            with scripted(["7", ""]):
+                main.pick_appearance(path, dict(ui.DEFAULT_APPEARANCE), mock.Mock())
+            self.assertEqual(json_loader.load_config(config_path=path)["appearance"]["theme"], "cards")
 
 
 def scripted(lines):

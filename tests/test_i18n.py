@@ -29,7 +29,7 @@ def literal_keys():
 
 def dynamic_keys():
     """Texts that reach t() through a variable."""
-    keys = set(ui.WEEKDAYS) | set(ui.TAGS.values()) | set(ui.COLOR_NAMES.values()) | set(ui.BACKGROUNDS)
+    keys = set(ui.WEEKDAYS) | set(ui.MONTHS) | set(ui.TAGS.values()) | set(ui.COLOR_NAMES.values()) | set(ui.BACKGROUNDS)
     keys |= {label for _, label, _ in ui.COUNT_LABELS}
     keys |= {text for items in (main.MENU_ITEMS, main.EDITOR_ITEMS, main.DOMAIN_ITEMS)
              for _, label, short in items for text in (label, short)}
