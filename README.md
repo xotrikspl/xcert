@@ -133,13 +133,17 @@ On a terminal, `--auto` and `--domain` show one progress line per certificate (s
 
 ## Appearance
 
-Three looks, all within 80 columns and without emoji so columns stay aligned in any terminal:
+Seven looks, all within 80 columns and without emoji so columns stay aligned in any terminal. Every screen (list, menu, renewal progress and summary, checks, editor, look picker, report, MOTD) is drawn in the chosen look:
 
 | Look | What it shows |
 |------|---------------|
 | `ledger` | Quiet table, colour only on certificate state. Reads best in logs. |
 | `timeline` | 90-day axis per certificate with the renewal window and the weekly timer runs, plus which run renews what. |
 | `console` | htop-style bars with state counters, validity meters and `[  OK  ]` tags. |
+| `calendar` | Three month grids like `cal -3` with expiry days in their state colour and the timer's Mondays marked, then an agenda sorted by date. Without colour, expiry days get a `*`. |
+| `board` | Departures board: certificates ordered by the timer run that renews them, a status column, striped rows in 24-bit colour and keys as tiles. |
+| `tree` | Certificates grouped by DNS provider with SANs as leaves, and a `systemctl status`-style header (timer, state, last run) in the menu. |
+| `cards` | One framed card per certificate in its state colour, most urgent first; the menu shows only the cards that need attention. |
 
 Colours: `auto` uses 24-bit colour when the terminal reports `COLORTERM=truecolor` (or runs in Windows Terminal) and the 16 ANSI colours otherwise; `full`, `16` and `none` force a mode. `NO_COLOR`, pipes, cron and journald always get plain text. `background` picks the palette for a `dark` or `light` terminal.
 
