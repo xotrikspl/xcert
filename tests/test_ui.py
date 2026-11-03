@@ -204,6 +204,19 @@ class NewLooksTest(unittest.TestCase):
         finally:
             ui.set_screen(80)
 
+    def test_newer_looks_use_a_wider_window(self):
+        long_name = "a-very-long-subdomain-name.example-company.com"
+        try:
+            ui.set_screen(132)
+            for theme in ("calendar", "board", "tree"):
+                self.assertIn(long_name, ui.render_list(ui.Painter(theme, "none"), CTX, STATES), theme)
+            calendar_text = ui.render_list(ui.Painter("calendar", "none"), CTX, STATES)
+            self.assertIn("March 2027", calendar_text)  # five months fit instead of three
+            cards = ui.render_list(ui.Painter("cards", "none"), CTX, STATES).splitlines()
+            self.assertGreaterEqual(max(ui.visible_len(line) for line in cards[2:]), ui.INNER)  # cards share the row
+        finally:
+            ui.set_screen(80)
+
     def test_every_look_has_its_own_palette_and_renderers(self):
         for theme in ui.THEMES:
             self.assertEqual(set(ui.PALETTES[theme]), set(ui.BACKGROUNDS), theme)
