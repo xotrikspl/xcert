@@ -1,10 +1,13 @@
 """Terminal rendering for xCert.
 
-Three looks share one data model: ledger (quiet table), timeline (90-day axis)
-and console (htop-like bars). Colours come from per-look 24-bit palettes, fall
+Seven looks share one data model: ledger (quiet table), timeline (90-day axis),
+console (htop-like bars), calendar (month grids), board (departures board),
+tree (grouped by provider) and cards (framed certificates). Colours come from
+per-look 24-bit palettes, fall
 back to the 16 ANSI colours, or disappear for journald, cron and NO_COLOR.
 Every screen fits in 80 columns and avoids emoji, whose width terminals disagree on.
 """
+import calendar
 import math
 import os
 import re
@@ -17,7 +20,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from i18n import t
 
-THEMES = ("ledger", "timeline", "console")
+THEMES = ("ledger", "timeline", "console", "calendar", "board", "tree", "cards")
 COLOR_MODES = ("auto", "full", "16", "none")
 BACKGROUNDS = ("dark", "light")
 DEFAULT_APPEARANCE = {"theme": "ledger", "colors": "auto", "background": "dark"}
@@ -78,10 +81,59 @@ PALETTES: Dict[str, Dict[str, Dict]] = {
             "bar": "#e3e6f7", "okbg": "#d3eee2", "warnbg": "#f3e8c4", "errbg": "#f7d7dd",
         },
     },
+    "calendar": {  # rose on graphite
+        "dark": {
+            "fg": "#e2dde3", "accent": "#f28cb1", "ok": "#8fd4a4", "warn": "#e9c46a", "err": "#f2848a",
+            "info": "#9cc3e6", "grad": ("#8fd4a4", "#bcd68c", "#e9c46a", "#eea36f", "#f2848a"),
+            "bar": "#2c2530", "okbg": "#1f3a2b", "warnbg": "#40351b", "errbg": "#47232a",
+        },
+        "light": {
+            "fg": "#2a2430", "accent": "#b8336a", "ok": "#2e7d4f", "warn": "#8c6400", "err": "#b5303f",
+            "info": "#2b6592", "grad": ("#2e7d4f", "#5f7f22", "#8c6400", "#ad5521", "#b5303f"),
+            "bar": "#f1e6ee", "okbg": "#d9eedf", "warnbg": "#f4e7c3", "errbg": "#f6d6da",
+        },
+    },
+    "board": {  # amber
+        "dark": {
+            "fg": "#f1e4c6", "accent": "#ffb020", "ok": "#a8d672", "warn": "#ffcf5a", "err": "#ff7a6b",
+            "info": "#8cc8e8", "grad": ("#a8d672", "#d2d866", "#ffcf5a", "#ffa24d", "#ff7a6b"),
+            "bar": "#2a241a", "okbg": "#263a1c", "warnbg": "#43361a", "errbg": "#47201b",
+        },
+        "light": {
+            "fg": "#221d12", "accent": "#9a5c00", "ok": "#3e7a1f", "warn": "#8a6300", "err": "#b2321f",
+            "info": "#23668f", "grad": ("#3e7a1f", "#6a7a14", "#8a6300", "#a8501a", "#b2321f"),
+            "bar": "#efe4c8", "okbg": "#dcebd0", "warnbg": "#f3e3bb", "errbg": "#f6d5cd",
+        },
+    },
+    "tree": {  # teal
+        "dark": {
+            "fg": "#d6e2e0", "accent": "#5ec8c0", "ok": "#93d69a", "warn": "#e3c66d", "err": "#ef8a8a",
+            "info": "#8bbbe8", "grad": ("#93d69a", "#bdd68a", "#e3c66d", "#eba06e", "#ef8a8a"),
+            "bar": "#1d2a2a", "okbg": "#1e3826", "warnbg": "#3b341b", "errbg": "#42252a",
+        },
+        "light": {
+            "fg": "#1d2a29", "accent": "#13787a", "ok": "#2b7a3c", "warn": "#876500", "err": "#b3343c",
+            "info": "#275f93", "grad": ("#2b7a3c", "#5c7a1f", "#876500", "#a8531c", "#b3343c"),
+            "bar": "#e2eeed", "okbg": "#d6eedb", "warnbg": "#f2e6c2", "errbg": "#f5d6d8",
+        },
+    },
+    "cards": {  # violet
+        "dark": {
+            "fg": "#e0dcef", "accent": "#c3a6ff", "ok": "#8edcb0", "warn": "#ecd17c", "err": "#f59aa7",
+            "info": "#94c2f2", "grad": ("#8edcb0", "#b6da8c", "#ecd17c", "#f0ab78", "#f59aa7"),
+            "bar": "#282440", "okbg": "#1f3d32", "warnbg": "#433a1d", "errbg": "#4a2430",
+        },
+        "light": {
+            "fg": "#241f38", "accent": "#6a3fd0", "ok": "#1f7a50", "warn": "#8a6800", "err": "#b52f48",
+            "info": "#2d62a8", "grad": ("#1f7a50", "#527d1c", "#8a6800", "#aa531b", "#b52f48"),
+            "bar": "#ebe6fb", "okbg": "#d4eee1", "warnbg": "#f3e8c4", "errbg": "#f8d6dd",
+        },
+    },
 }
 ANSI_FG = {"fg": "39", "ok": "32", "warn": "33", "err": "31", "info": "34",
            "g1": "32", "g2": "32", "g3": "33", "g4": "33", "g5": "31"}
-ANSI_ACCENT = {"ledger": "39", "timeline": "36", "console": "36"}
+ANSI_ACCENT = {"ledger": "39", "timeline": "36", "console": "36", "calendar": "95", "board": "33", "tree": "36",
+               "cards": "35"}
 ANSI_CHIP = {"bar": "7", "ok": "30;42", "warn": "30;43", "err": "30;41"}
 CHIP_BG = {"bar": "bar", "ok": "okbg", "warn": "warnbg", "err": "errbg"}
 
@@ -141,6 +193,9 @@ class Painter:
 
     def dim(self, text: str) -> str:
         return self._sgr("2", text)
+
+    def reverse(self, text: str) -> str:
+        return self._sgr("7;1", text)
 
     def chip(self, role: str, text: str, accent: bool = False) -> str:
         """Text on a tinted background, used by the console look's bars."""
@@ -336,6 +391,8 @@ def _mark(p: Painter, on: bool) -> str:
 
 
 def _hint(p: Painter, back: bool = False) -> str:
+    if p.theme == "board":
+        return _tile_keys(p, [("↑↓", t("move")), ("Enter", t("select"))] + ([("q", t("back"))] if back else []))
     text = t("↑↓ move   Enter select   q back") if back else t("↑↓ move   Enter select")
     return _bar(p, [("bar", " " + text + " ", False), None]) if p.theme == "console" else "  " + p.dim(text)
 
@@ -356,10 +413,26 @@ def _window(p: Painter, lines: List[str], sel: Optional[int], room: int) -> List
             + [p.dim("    ↓ " + t("{n} more", n=below)) if below else ""])
 
 
-def _action_rows(p: Painter, items, sel: Optional[int] = None, first: int = 0) -> List[str]:
+def _action_rows(p: Painter, items, sel: Optional[int] = None, first: int = 0, bold_sel: bool = True) -> List[str]:
     """One `key  label` row per item; `first` is the cursor index of the first row."""
     return [f" {_mark(p, first + i == sel)}{p.fg('accent', key, bold=True)}   "
-            + (p.bold(label) if first + i == sel else label) for i, (key, label, _) in enumerate(items)]
+            + (p.bold(label) if bold_sel and first + i == sel else label) for i, (key, label, _) in enumerate(items)]
+
+
+def _rows(p: Painter, items, sel: Optional[int] = None, first: int = 0, bold_sel: bool = True,
+          last_row: bool = True) -> List[str]:
+    """Pickable rows in the current look: tiles on the board, branches in the tree, plain keys elsewhere."""
+    if p.theme == "board":
+        return _tile_rows(p, items, sel, first, bold_sel)
+    if p.theme == "tree":
+        return _tree_rows(p, items, sel, first, last_row, bold_sel)
+    return _action_rows(p, items, sel, first, bold_sel)
+
+
+def _tree_head(p: Painter, ctx: Context, sub: str, lvl: str) -> str:
+    """systemctl-status style title: the dot carries the overall state."""
+    return row(p.fg(lvl, "●") + " " + p.fg("accent", "xCert", bold=True) + " " + p.dim(ctx.version)
+               + (" - " + p.bold(sub) if sub else ""), p.dim(f"{ctx.host}  {ctx.now:%d.%m %H:%M}"))
 
 
 def _head(p: Painter, ctx: Context, sub: str) -> List[str]:
@@ -370,10 +443,20 @@ def _head(p: Painter, ctx: Context, sub: str) -> List[str]:
     if p.theme == "timeline":
         return [row(p.fg("accent", "xCert", bold=True) + "  " + p.dim(ctx.version) + "   " + p.bold(sub),
                     p.dim(run_label(ctx)))]
+    if p.theme == "calendar":
+        return [row(_brand(p, ctx, sub), p.dim(f"{day(ctx.now)}.{ctx.now.year}  {ctx.now:%H:%M}"))]
+    if p.theme == "board":
+        return [_board_bar(p, f"xCert {ctx.version}" + (f"   {sub}" if sub else ""),
+                           f"{clip(ctx.host, 16)}   {day(ctx.now)} {ctx.now:%H:%M}")]
+    if p.theme == "tree":
+        return [_tree_head(p, ctx, sub, _worst(ctx.states, ctx.threshold))]
+    if p.theme == "cards":
+        return [row(_brand(p, ctx, sub), p.dim(f"{ctx.host}  {ctx.now:%d.%m %H:%M}"))]
     return [_title(p, ctx, ctx.states, sub)]
 
 
 # ======================
+# LEDGER# ======================
 # LEDGER
 # ======================
 def _ledger_rule(p: Painter) -> str:
@@ -658,12 +741,470 @@ def console_motd(p: Painter, ctx: Context, states) -> str:
 
 
 # ======================
+# SHARED BY THE NEWER LOOKS
+# ======================
+def _renew_dates(states: Sequence[CertState], ctx: Context) -> Dict[str, datetime]:
+    """Certificate name -> the timer run that renews it (empty without an active timer)."""
+    return {s.name: when for when, group in plan_runs(states, ctx, len(states)) for s in group}
+
+
+def _by_expiry(s: CertState) -> Tuple[bool, int]:
+    """Sort key: soonest expiry first, certificates without a date last."""
+    return s.days_left is None, s.days_left or 0
+
+
+def _worst(states: Sequence[CertState], threshold: int) -> str:
+    levels = {level(s, threshold) for s in states}
+    return next((lvl for lvl in ("err", "warn", "ok") if lvl in levels), "accent")
+
+
+def _brand(p: Painter, ctx: Context, sub: str) -> str:
+    return p.fg("accent", "xCert", bold=True) + "  " + p.dim(ctx.version) + ("   " + p.bold(sub) if sub else "")
+
+
+def _dot(p: Painter, s: CertState, threshold: int) -> str:
+    return p.fg(level(s, threshold), "○" if not s.present else "●")
+
+
+# ======================
+# CALENDAR
+# ======================
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
+          "November", "December")
+GRID_W = 21  # seven days of two digits and a marker slot
+
+
+def _cal_months(ctx: Context, count: int = 3) -> List[datetime]:
+    """First days of the months to draw; a month with under a week left gives way to the next one."""
+    first = ctx.now.replace(day=1)
+    if calendar.monthrange(first.year, first.month)[1] - ctx.now.day < 7:
+        first = (first + timedelta(days=32)).replace(day=1)
+    months = [first]
+    while len(months) < count:
+        months.append((months[-1] + timedelta(days=32)).replace(day=1))
+    return months
+
+
+def _month_grid(p: Painter, month: datetime, states: Sequence[CertState], ctx: Context) -> List[str]:
+    """One month as 8 rows of GRID_W columns. The slot after each day carries a marker in plain text,
+    so expiry days (`*`) and today (`<`) survive NO_COLOR."""
+    rank = ("ok", "warn", "err")
+    expiry: Dict = {}
+    for s in states:
+        if s.expires:
+            lvl = level(s, ctx.threshold)
+            if rank.index(lvl) >= rank.index(expiry.get(s.expires.date(), "ok")):
+                expiry[s.expires.date()] = lvl
+    runs = {(ctx.next_run + timedelta(days=7 * k)).date() for k in range(15)} if ctx.next_run else set()
+    title = f"{t(MONTHS[month.month - 1])} {month.year}"
+    lines = [p.bold(" " * ((GRID_W - 1 - len(title)) // 2) + title), p.dim(t("Mo Tu We Th Fr Sa Su"))]
+    plain = p.mode == "none"
+    for week in calendar.Calendar().monthdatescalendar(month.year, month.month):
+        cells = []
+        for d in week:
+            num = f"{d.day:2d}"
+            if d.month != month.month:
+                cells.append("   ")
+            elif d in expiry:
+                lvl = expiry[d]
+                cells.append((p.chip(lvl, num) if p.mode == "full" else p.fg(lvl, num, bold=True)) + ("*" if plain else " "))
+            elif d == ctx.now.date():
+                cells.append(p.reverse(num) + ("<" if plain else " "))
+            elif d in runs:
+                cells.append(p.fg("accent", num, bold=True) + " ")
+            else:
+                cells.append((p.dim(num) if d < ctx.now.date() else num) + " ")
+        lines.append("".join(cells))
+    return [pad(line, GRID_W) for line in lines + [""] * (8 - len(lines))]
+
+
+def _cal_legend(p: Painter) -> str:
+    if p.mode == "none":
+        return "  12* " + t("expiry day") + "   12< " + t("today")
+    swatch = (lambda lvl, text: p.chip(lvl, f" {text} ") if p.mode == "full" else p.fg(lvl, text, bold=True))
+    return ("  " + swatch("ok", t("ok")) + " " + swatch("warn", t("due")) + " " + swatch("err", t("expired")) + " "
+            + p.dim(t("expiry day")) + "   " + p.fg("accent", "2", bold=True) + " " + p.dim(t("timer run"))
+            + "   " + p.reverse("31") + " " + p.dim(t("today")))
+
+
+def _cal_date(p: Painter, s: CertState) -> str:
+    if s.expires is None:
+        return p.dim(pad("-", 11))
+    text = pad(f"{s.expires:%d.%m}", 6) + p.dim(pad(t(WEEKDAYS[s.expires.weekday()]), 5))
+    return p.fg("err", text) if s.days_left is not None and s.days_left < 0 else text
+
+
+def calendar_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
+    out = _head(p, ctx, t("certificates")) + [""]
+    grids = [_month_grid(p, m, states, ctx) for m in _cal_months(ctx)]
+    out += [("  " + "  ".join(parts)).rstrip() for parts in zip(*grids)]
+    out += [_cal_legend(p), ""]
+    renew = _renew_dates(states, ctx)
+    for s in sorted(states, key=_by_expiry):
+        lvl = level(s, ctx.threshold)
+        name = clip(s.name, 26) + (p.dim(f" +{len(s.sans)}") if s.sans else "")
+        line = (f"  {_cal_date(p, s)} {_dot(p, s, ctx.threshold)} {pad(name, 30)}"
+                + p.fg(lvl, rpad(short_status(s), 8), bold=lvl != "ok"))
+        if s.name in renew:
+            line += "   " + p.dim(t("renew {when}", when=day(renew[s.name])))
+        out.append(line)
+    out += ["", "  " + _counts_line(p, states, ctx, ", "),
+            "  " + p.dim(t("renewal threshold {n} days", n=ctx.threshold) + ", " + run_label(ctx))]
+    return "\n".join(out)
+
+
+def calendar_summary(p: Painter, ctx: Context, results, timings, elapsed: float, skipped=()) -> str:
+    start = ctx.now - timedelta(seconds=elapsed)
+    span = t("from {start} to {end}", start=f"{start:%H:%M}", end=f"{ctx.now:%H:%M}")
+    return "\n".join(["", "  " + _totals(p, results, skipped, "   "),
+                      "  " + p.dim(f"{day(ctx.now)}, {span}, {duration(elapsed)}"),
+                      "  " + p.dim(run_label(ctx))] + _failures(p, results, "  "))
+
+
+def calendar_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
+    out = _head(p, ctx, "") + [""]
+    rows = _action_rows(p, items, sel)
+    grid = _month_grid(p, _cal_months(ctx, 1)[0], states, ctx)
+    for i in range(max(len(rows), len(grid))):
+        left = rows[i] if i < len(rows) else ""
+        out.append((pad(left, WIDTH - GRID_W - 2) + (grid[i] if i < len(grid) else "")).rstrip())
+    out += ["", "  " + _counts_line(p, states, ctx), "  " + p.dim(run_label(ctx))] + run_alert(p, ctx, "  ")
+    return "\n".join(out + ["", _hint(p)])
+
+
+def calendar_motd(p: Painter, ctx: Context, states) -> str:
+    bad = [s for s in states if level(s, ctx.threshold) == "err"]
+    head = p.fg("accent", "xCert", bold=True) + "  "
+    if not bad:
+        out = [row(head + p.fg("ok", t("{n} certificates OK", n=len(states))), p.dim(run_label(ctx)))]
+        dated = sorted((s for s in states if s.expires), key=_by_expiry)
+        if dated:
+            out.append("  " + p.dim(t("next expiry {when}: {name}", when=day(dated[0].expires), name=dated[0].name)))
+        return "\n".join(out)
+    out = [row(head + t("{n} certificates", n=len(states)) + ", " + p.fg("err", t("{n} need attention", n=len(bad))),
+               p.dim(run_label(ctx)))]
+    out += [f"  {_cal_date(p, s)} {_dot(p, s, ctx.threshold)} {pad(clip(s.name, 25), 26)} {status_text(s)}"
+            for s in sorted(bad, key=_by_expiry)]
+    return "\n".join(out + ["  " + p.dim(t("details:") + " xcert --list")])
+
+
+# ======================
+# BOARD
+# ======================
+def _board_bar(p: Painter, left: str, right: str = "") -> str:
+    left = clip(left, WIDTH - 4 - len(right))
+    return p.chip("bar", " " + left + " " * max(1, WIDTH - 2 - len(left) - len(right)) + right + " ", accent=True)
+
+
+def _zebra(p: Painter, groups: Sequence[List[str]]) -> List[str]:
+    """Every other group of rows on the bar tint, like a departures board; only 24-bit has a tint
+    subtle enough, the other modes keep plain rows."""
+    if p.mode != "full":
+        return [line for group in groups for line in group]
+    bg = f"\033[48;2;{_rgb(p.pal['bar'])}m"
+    return [bg + pad(line, WIDTH).replace("\033[0m", "\033[0m" + bg) + "\033[0m" if i % 2 else line
+            for i, group in enumerate(groups) for line in group]
+
+
+def _tile(p: Painter, key: str, on: bool = False) -> str:
+    if p.mode == "none":
+        return f"[{key}]"
+    return p.reverse(p.fg("accent", f" {key} ", bold=True)) if on else p.chip("bar", f" {key} ", accent=True)
+
+
+def _tile_rows(p: Painter, items, sel: Optional[int] = None, first: int = 0, bold_sel: bool = True) -> List[str]:
+    return [f" {_mark(p, first + i == sel)}{_tile(p, key, first + i == sel)}  "
+            + (p.bold(label) if bold_sel and first + i == sel else label) for i, (key, label, _) in enumerate(items)]
+
+
+def _tile_keys(p: Painter, keys: Sequence[Tuple[str, str]]) -> str:
+    return "  " + "   ".join(_tile(p, key) + " " + label for key, label in keys)
+
+
+def _board_status(s: CertState, ctx: Context) -> Tuple[str, str]:
+    cat = category(s, ctx.threshold)
+    if cat == "ok":
+        return "ok", t("scheduled")
+    if cat == "due":
+        return "warn", t("due")
+    if cat == "critical":
+        return "err", t("expiring")
+    return "err", status_text(s) if cat == "missing" else t(cat)
+
+
+def _board_row(p: Painter, s: CertState, ctx: Context, when: Optional[datetime]) -> str:
+    if when is None:
+        run = p.dim(pad("-", 10))
+    else:
+        run = pad(day(when), 10)
+        run = p.fg("accent", run, bold=True) if when == ctx.next_run else p.dim(run)
+    role, status = _board_status(s, ctx)
+    return (" " + run + pad(clip(s.name, 26), 27) + p.dim(pad(clip(s.provider, 12), 13))
+            + pad(f"{s.expires:%d.%m.%Y}" if s.expires else "-", 11) + p.fg(role, clip(status, WIDTH - 63), bold=role != "ok"))
+
+
+def board_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
+    renew = _renew_dates(states, ctx)
+    out = _head(p, ctx, t("certificates"))
+    out.append(p.dim(" " + pad(t("run"), 10) + pad(t("certificate"), 27) + pad(t("provider"), 13) + pad(t("expires"), 11)
+                     + t("status")))
+    order = sorted(states, key=lambda s: (renew.get(s.name) or datetime.max, _by_expiry(s)))
+    out += _zebra(p, [[_board_row(p, s, ctx, renew.get(s.name))] + [" " * 11 + p.dim("+ " + san) for san in s.sans]
+                      for s in order])
+    counted = ", ".join(f"{n} {t(label)}" for n, label, _ in counts(states, ctx.threshold))
+    out.append(_board_bar(p, counted or t("no certificates configured"), run_label(ctx)))
+    return "\n".join(out)
+
+
+def board_summary(p: Painter, ctx: Context, results, timings, elapsed: float, skipped=()) -> str:
+    out = [_board_bar(p, t("renewal"), duration(elapsed)),
+           p.dim(" " + pad(t("start"), 8) + pad(t("certificate"), 31) + pad(t("result"), 14) + t("took"))]
+    groups = []
+    for (label, ok), (start, length) in zip(results, timings):
+        start = int(start)
+        result = (p.dim(t("skipped")) if ok and label in skipped else p.fg("ok", t("done")) if ok
+                  else p.fg("err", t("failed"), bold=True))
+        groups.append([" " + p.fg("accent", pad(f"+{start // 60}:{start % 60:02d}", 8)) + pad(clip(label, 30), 31)
+                       + pad(result, 14) + p.dim(duration(length) if length >= 1 else "-")])
+    out += _zebra(p, groups) + ["", " " + _totals(p, results, skipped, "   ")]
+    return "\n".join(out + _failures(p, results, " "))
+
+
+def _names_line(names: Sequence[str], width: int) -> str:
+    """Names joined by commas up to `width`, then how many did not fit."""
+    shown: List[str] = []
+    for name in names:
+        if len(", ".join(shown + [name])) > width - 14:
+            break
+        shown.append(name)
+    shown = shown or [clip(names[0], width - 14)]
+    rest = len(names) - len(shown)
+    return ", ".join(shown) + (", " + t("{n} more", n=rest) if rest else "")
+
+
+def board_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
+    out = _head(p, ctx, "") + [""]
+    plan = plan_runs(states, ctx, 1)
+    if plan:
+        when, group = plan[0]
+        out += ["  " + t("next run {when}", when=p.fg("accent", f"{day(when)} {when:%H:%M}", bold=True))
+                + "   " + p.dim(t("{n} certificates", n=len(group))),
+                "    " + _names_line([s.name for s in group], INNER - 4)]
+    elif not ctx.running:
+        out.append("  " + p.fg("err", t("timer not active")))
+    out += ["  " + _counts_line(p, states, ctx)] + run_alert(p, ctx, "  ") + [""]
+    out += _tile_rows(p, items, sel)
+    return "\n".join(out + ["", _hint(p)])
+
+
+def board_motd(p: Painter, ctx: Context, states) -> str:
+    bad = [s for s in states if level(s, ctx.threshold) == "err"]
+    if not bad:
+        return _board_bar(p, "xCert   " + t("{n} certificates OK", n=len(states)), run_label(ctx))
+    out = [_board_bar(p, "xCert   " + t("{n} certificates", n=len(states)) + ", " + t("{n} need attention", n=len(bad)),
+                      run_label(ctx))]
+    for s in bad:
+        role, status = _board_status(s, ctx)
+        out.append(" " + pad(clip(s.name, 28), 29) + p.dim(pad(f"{s.expires:%d.%m.%Y}" if s.expires else "-", 11))
+                   + p.fg(role, status, bold=True))
+    return "\n".join(out + [" " + p.dim(t("details:") + " xcert --list")])
+
+
+# ======================
+# TREE
+# ======================
+def _branch(p: Painter, last: bool) -> str:
+    return p.dim("└─ " if last else "├─ ")
+
+
+def _stem(p: Painter, last: bool) -> str:
+    return p.dim("   " if last else "│  ")
+
+
+def _tree_rows(p: Painter, items, sel: Optional[int] = None, first: int = 0, last_row: bool = True,
+               bold_sel: bool = True) -> List[str]:
+    """Actions as the branches of a tree; the cursor turns its branch into an arrow."""
+    out = []
+    for i, (key, label, _) in enumerate(items):
+        on, last = first + i == sel, last_row and i == len(items) - 1
+        lead = p.fg("accent", "└▸ " if last else "├▸ ") if on else _branch(p, last)
+        out.append(" " + lead + p.fg("accent", key, bold=True) + "  " + (p.bold(label) if bold_sel and on else label))
+    return out
+
+
+def tree_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
+    out = _head(p, ctx, t("certificates")) + [""]
+    groups: Dict[str, List[CertState]] = {}
+    for s in states:
+        groups.setdefault(s.provider, []).append(s)
+    renew = _renew_dates(states, ctx)
+    for provider, group in groups.items():
+        out.append(p.fg("accent", provider, bold=True) + " " + p.dim(str(len(group))))
+        for i, s in enumerate(group):
+            last, lvl = i == len(group) - 1, level(s, ctx.threshold)
+            if s.days_left is None:
+                tail = p.fg("err", status_text(s))
+            else:
+                tail = p.fg(lvl, rpad(short_status(s), 7), bold=lvl != "ok") + "  " + p.dim(f"{s.expires:%d.%m.%Y}")
+            if lvl != "ok" and s.name in renew:
+                tail += "  " + p.fg(lvl, t("renew {when}", when=day(renew[s.name])))
+            out.append(_branch(p, last) + _dot(p, s, ctx.threshold) + " " + pad(clip(s.name, 33), 34) + tail)
+            out += [_stem(p, last) + _branch(p, j == len(s.sans) - 1) + p.dim(san) for j, san in enumerate(s.sans)]
+    out += ["", _counts_line(p, states, ctx, ", "),
+            p.dim(t("renewal threshold {n} days", n=ctx.threshold) + ", " + run_label(ctx))]
+    return "\n".join(out)
+
+
+def tree_summary(p: Painter, ctx: Context, results, timings, elapsed: float, skipped=()) -> str:
+    failed = any(not ok for _, ok in results)
+    out = ["", p.fg("err" if failed else "ok", "●") + " " + p.bold(t("renewal")) + "  " + p.dim(duration(elapsed))]
+    for i, ((label, ok), (_, length)) in enumerate(zip(results, timings)):
+        if ok and label in skipped:
+            mark, result = p.dim("-"), p.dim(t("skipped"))
+        elif ok:
+            mark, result = p.fg("ok", "✓"), p.fg("ok", t("done"))
+        else:
+            mark, result = p.fg("err", "✗"), p.fg("err", t("failed"), bold=True)
+        out.append(_branch(p, i == len(results) - 1) + mark + " " + pad(clip(label, 30), 31) + pad(result, 12)
+                   + p.dim(duration(length) if length >= 1 else ""))
+    return "\n".join(out + ["", _totals(p, results, skipped, "   ")] + _failures(p, results))
+
+
+def tree_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
+    if ctx.running:
+        last = t("renewal running now")
+    elif ctx.last_run is None:
+        last = p.dim(t("no run yet"))
+    else:
+        when = f"{day(ctx.last_run)} {ctx.last_run:%H:%M}"
+        last = p.fg("ok", t("ok")) + p.dim(", " + when) if ctx.last_ok else p.fg("err", t("failed") + ", " + when)
+    timer = (p.fg("ok", t("active")) + p.dim(", " + run_label(ctx))) if ctx.next_run else p.fg("err", t("not active"))
+    facts = [(t("timer"), timer), (t("state"), _counts_line(p, states, ctx, ", ")), (t("last timer run"), last)]
+    width = max(len(label) for label, _ in facts)
+    out = _head(p, ctx, t("certificates")) + [f"  {rpad(label, width)}: {value}" for label, value in facts]
+    out += run_alert(p, ctx, "  ") + ["", p.fg("accent", t("actions"), bold=True)] + _tree_rows(p, items, sel)
+    return "\n".join(out + ["", _hint(p)])
+
+
+def tree_motd(p: Painter, ctx: Context, states) -> str:
+    bad = [s for s in states if level(s, ctx.threshold) == "err"]
+    head = p.fg("err" if bad else "ok", "●") + " " + p.fg("accent", "xCert", bold=True) + "  "
+    if not bad:
+        return row(head + t("{n} certificates OK", n=len(states)), p.dim(run_label(ctx)))
+    out = [row(head + t("{n} certificates", n=len(states)) + ", " + p.fg("err", t("{n} need attention", n=len(bad))),
+               p.dim(run_label(ctx)))]
+    out += ["  " + _branch(p, i == len(bad) - 1) + _dot(p, s, ctx.threshold) + " " + pad(clip(s.name, 28), 29)
+            + status_text(s) for i, s in enumerate(bad)]
+    return "\n".join(out + ["  " + p.dim(t("details:") + " xcert --list")])
+
+
+# ======================
+# CARDS
+# ======================
+CARD_W = 39
+
+
+def _card(p: Painter, role: str, title: str, right: str, body: Sequence[str], width: int = 0) -> List[str]:
+    """Rounded frame in a state colour, `title` and `right` set into the top border; `width` 0 spans the screen."""
+    width = width or WIDTH
+    frame = p.dim if role == "dim" else (lambda text: p.fg(role, text))
+    room = width - 6 - (visible_len(right) + 2 if right else 0)
+    title = title if visible_len(title) <= room else clip(ANSI_RE.sub("", title), room)
+    fill = room - visible_len(title)
+    top = (frame("╭─ ") + p.bold(title) + frame(" " + "─" * fill) + (" " + right + " " if right else "")
+           + frame("─╮"))
+    middle = [frame("│") + " " + pad(cut(line, width - 4) if visible_len(line) > width - 4 else line, width - 4)
+              + " " + frame("│") for line in body]
+    return [top] + middle + [frame("╰" + "─" * (width - 2) + "╯")]
+
+
+def _card_grid(cards: Sequence[List[str]]) -> List[str]:
+    """Cards side by side, as many as the screen width takes."""
+    per = max(1, (WIDTH + 2) // (CARD_W + 2))
+    out = []
+    for i in range(0, len(cards), per):
+        chunk = cards[i:i + per]
+        out += ["  ".join(pad(card[n], CARD_W) for card in chunk).rstrip() for n in range(len(chunk[0]))]
+    return out
+
+
+def _cert_card(p: Painter, s: CertState, ctx: Context, renew: Dict[str, datetime]) -> List[str]:
+    lvl = level(s, ctx.threshold)
+    meter_w = CARD_W - 4 - 11
+    if s.days_left is None or s.days_left < 0:
+        meter = p.dim("·" * meter_w)
+    else:
+        bar = smooth_bar(s.days_left / AXIS_DAYS, meter_w)
+        meter = p.fg(grad_role(s.days_left, ctx.threshold), bar) + p.dim("·" * (meter_w - len(bar)))
+    when = renew.get(s.name)
+    nxt = p.fg("warn" if lvl != "ok" else "accent", t("renew {when}", when=f"{when.day}.{when.month}")) if when else ""
+    return _card(p, lvl, clip(s.name, CARD_W - 12), p.dim(f"+{len(s.sans)}") if s.sans else "",
+                 [p.fg(lvl, pad(short_status(s), 10), bold=True) + " " + meter,
+                  p.dim(pad(clip(s.provider, 12), 13)) + pad(f"{s.expires:%d.%m.%Y}" if s.expires else "-", 11) + nxt],
+                 CARD_W)
+
+
+def cards_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
+    renew = _renew_dates(states, ctx)
+    out = _head(p, ctx, t("certificates")) + [""]
+    out += _card_grid([_cert_card(p, s, ctx, renew) for s in sorted(states, key=_by_expiry)])
+    out += ["", "  " + _counts_line(p, states, ctx, ", "),
+            "  " + p.dim(t("renewal threshold {n} days", n=ctx.threshold) + ", " + run_label(ctx))]
+    return "\n".join(out)
+
+
+def cards_summary(p: Painter, ctx: Context, results, timings, elapsed: float, skipped=()) -> str:
+    body = []
+    for (label, ok), (_, length) in zip(results, timings):
+        if ok and label in skipped:
+            body.append(p.dim("- " + pad(clip(label, 34), 35) + t("skipped")))
+        else:
+            body.append((p.fg("ok", "✓") if ok else p.fg("err", "✗")) + " " + pad(clip(label, 34), 35)
+                        + pad(p.fg("ok", t("done")) if ok else p.fg("err", t("failed"), bold=True), 12)
+                        + p.dim(duration(length)))
+    body += ["", _totals(p, results, skipped, "   ")]
+    role = "err" if any(not ok for _, ok in results) else "ok"
+    return "\n".join([""] + _card(p, role, t("renewal"), p.dim(duration(elapsed)), body) + _failures(p, results, "  "))
+
+
+def cards_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
+    renew = _renew_dates(states, ctx)
+    bad = sorted((s for s in states if level(s, ctx.threshold) != "ok"), key=_by_expiry)
+    per = max(1, (WIDTH + 2) // (CARD_W + 2))
+    out = _head(p, ctx, "") + [""]
+    if bad:
+        out += _card_grid([_cert_card(p, s, ctx, renew) for s in bad[:per]])
+        if len(bad) > per:
+            out.append("  " + p.dim(t("+{n} more, l lists all", n=len(bad) - per)))
+    else:
+        out.append("  " + p.fg("ok", t("{n} certificates OK", n=len(states))))
+    out += run_alert(p, ctx, "  ")
+    out += _card(p, "dim", t("actions"), p.dim(run_label(ctx)), _action_rows(p, items, sel))
+    return "\n".join(out + [_hint(p)])
+
+
+def cards_motd(p: Painter, ctx: Context, states) -> str:
+    bad = [s for s in states if level(s, ctx.threshold) == "err"]
+    if not bad:
+        return "\n".join(_card(p, "ok", "xCert", p.dim(run_label(ctx)),
+                               [p.fg("ok", t("{n} certificates OK", n=len(states)))]))
+    body = [f"{_dot(p, s, ctx.threshold)} {pad(clip(s.name, 30), 31)} {status_text(s)}" for s in bad]
+    body.append(p.dim(t("details:") + " xcert --list"))
+    title = t("{n} certificates", n=len(states)) + ", " + p.fg("err", t("{n} need attention", n=len(bad)))
+    return "\n".join(_card(p, "err", "xCert", title, body))
+
+
+# ======================
 # DISPATCH
 # ======================
 RENDERERS = {
     "ledger": {"list": ledger_list, "summary": ledger_summary, "menu": ledger_menu, "motd": ledger_motd},
     "timeline": {"list": timeline_list, "summary": timeline_summary, "menu": timeline_menu, "motd": timeline_motd},
     "console": {"list": console_list, "summary": console_summary, "menu": console_menu, "motd": console_motd},
+    "calendar": {"list": calendar_list, "summary": calendar_summary, "menu": calendar_menu, "motd": calendar_motd},
+    "board": {"list": board_list, "summary": board_summary, "menu": board_menu, "motd": board_motd},
+    "tree": {"list": tree_list, "summary": tree_summary, "menu": tree_menu, "motd": tree_motd},
+    "cards": {"list": cards_list, "summary": cards_summary, "menu": cards_menu, "motd": cards_motd},
 }
 
 
@@ -693,39 +1234,51 @@ def nav_step(theme: str, count: int) -> int:
     return (count + 1) // 2 if theme == "timeline" else 1
 
 
-THEME_NAMES = {"ledger": "ledger", "timeline": "timeline", "console": "console"}
 COLOR_NAMES = {"auto": "auto", "full": "full (24-bit)", "16": "16 colours", "none": "none"}
 
 
 LANGUAGE_NAMES = {"en": "English", "pl": "polski"}  # each in its own language, so it is recognisable
-PICKER_ROWS = ("1", "2", "3", "c", "b", "l")  # cursor rows of the look picker, in screen order
+# Cursor rows of the look picker, in screen order: one digit per look, then the settings.
+PICKER_ROWS = tuple(str(i + 1) for i in range(len(THEMES))) + ("c", "b", "l")
+
+
+def _samples(p: Painter, ctx: Context) -> Dict[str, str]:
+    """One line per look for the picker, drawn the way that look draws a certificate 79 days from expiry."""
+    state = CertState("example.pl", "ovh", present=True, days_left=79, expires=ctx.now + timedelta(days=79))
+    renew = ctx.now + timedelta(days=49)
+    expiry = p.chip("ok", "18") if p.mode == "full" else p.fg("ok", "18", bold=True)
+    return {
+        "ledger": p.fg("ok", "●") + " example.pl   " + p.dim("ovh") + "   " + p.fg("ok", t("{n} days", n=79), bold=True),
+        "timeline": _runs([(grad_role(79 - i * 2, ctx.threshold), "╍" if 79 - i * 2 <= ctx.threshold else "━")
+                           for i in range(20)] + [("ok", "◆"), ("dim", "···")], p) + " 79 d",
+        "console": _meter(p, state, ctx, 30),
+        "calendar": p.dim("15 16 17 ") + expiry + ("*" if p.mode == "none" else " ") + p.dim("19 20  ") + "example.pl",
+        "board": p.fg("accent", pad(day(renew), 10), bold=True) + "example.pl   " + p.fg("ok", t("scheduled")),
+        "tree": p.fg("accent", "ovh", bold=True) + " " + p.dim("└─ ") + p.fg("ok", "●") + " example.pl  "
+        + p.fg("ok", "79 d", bold=True),
+        "cards": p.fg("ok", "╭─ ") + p.bold("example.pl") + p.fg("ok", " ──── ") + p.fg("ok", "79 d", bold=True)
+        + p.fg("ok", " ─╮"),
+    }
 
 
 def render_picker(p: Painter, ctx: Context, appearance: Dict[str, str], effective_mode: str,
                   language: str = "en", sel: Optional[int] = None) -> str:
     """Look picker: each option is drawn with a sample of that look."""
-    sample_state = CertState("example.pl", "ovh", present=True, days_left=79,
-                             expires=ctx.now + timedelta(days=79))
-    samples = {
-        "ledger": p.fg("ok", "●") + " example.pl   " + p.dim("ovh") + "   " + p.fg("ok", t("{n} days", n=79), bold=True),
-        "timeline": _runs([(grad_role(79 - i * 2, ctx.threshold), "╍" if 79 - i * 2 <= ctx.threshold else "━")
-                           for i in range(20)] + [("ok", "◆"), ("dim", "···")], p) + " 79 d",
-        "console": _meter(p, sample_state, ctx, 30),
-    }
-    out = _head(p, ctx, t("look")) + ["  " + p.dim(t("saved to config.json")), ""]
-    for i, theme in enumerate(THEMES):
-        current = theme == appearance["theme"]
-        name = p.bold(pad(THEME_NAMES[theme], 10)) if current else pad(THEME_NAMES[theme], 10)
-        out.append(f" {_mark(p, i == sel)}{p.fg('accent', str(i + 1), bold=True)}  "
-                   f"{p.fg('accent', '✓') if current else ' '} {name} {samples[theme]}")
+    samples = _samples(p, ctx)
+    looks = [(str(i + 1), (p.fg("accent", "✓") if theme == appearance["theme"] else " ") + " "
+              + (p.bold(pad(theme, 10)) if theme == appearance["theme"] else pad(theme, 10)) + " " + samples[theme], "")
+             for i, theme in enumerate(THEMES)]
     note = "" if appearance["colors"] == effective_mode else p.dim(
         "  " + t("(now {mode})", mode=t(COLOR_NAMES[effective_mode])))
-    settings = (("c", t("colours"), t(COLOR_NAMES[appearance["colors"]]), note),
-                ("b", t("background"), t(appearance["background"]), ""),
-                ("l", t("language"), LANGUAGE_NAMES[language], ""))
-    out.append("")
-    for i, (key, label, value, extra) in enumerate(settings, 3):
-        out.append(f" {_mark(p, i == sel)}{p.fg('accent', key, bold=True)}  {pad(label, 13)}{p.bold(value)}{extra}")
+    settings = [("c", pad(t("colours"), 13) + p.bold(t(COLOR_NAMES[appearance["colors"]])) + note, ""),
+                ("b", pad(t("background"), 13) + p.bold(t(appearance["background"])), ""),
+                ("l", pad(t("language"), 13) + p.bold(LANGUAGE_NAMES[language]), "")]
+    out = _head(p, ctx, t("look")) + ["  " + p.dim(t("saved to config.json")), ""]
+    if p.theme == "cards":
+        out += _card(p, "dim", t("look"), "", _action_rows(p, looks, sel, bold_sel=False))
+    else:
+        out += _rows(p, looks, sel, bold_sel=False, last_row=False)
+    out += ([] if p.theme == "tree" else [""]) + _rows(p, settings, sel, len(THEMES), bold_sel=False)
     keys = [("↑↓", t("move")), ("←→", t("change")), ("Enter", t("save")), ("q", t("back"))]
     out += ["",
             p.dim("  " + t("one-off for a single command:") + " xcert --theme console --colors 16 --list"),
@@ -738,6 +1291,8 @@ def render_picker(p: Painter, ctx: Context, appearance: Dict[str, str], effectiv
 def _keys_line(p: Painter, keys: Sequence[Tuple[str, str]]) -> str:
     if p.theme == "console":
         return _fkeys(p, [(key, "", label) for key, label in keys])
+    if p.theme == "board":
+        return _tile_keys(p, keys)
     return "  " + "   ".join(f"{p.fg('accent', k, bold=True)} {label}" for k, label in keys)
 
 
@@ -753,18 +1308,38 @@ def render_editor(p: Painter, ctx: Context, config: Dict, path: str, sel: int, i
             "  " + p.dim(t("on failure")) + " " + (clip(general["notify_cmd"], INNER - 20) if general.get("notify_cmd")
                                                   else p.fg("warn", t("no notice"))),
             "  " + p.dim(t("file") + " " + clip(path, INNER - 8)), ""]
-    sep = p.dim("│") if p.theme == "timeline" else " "
+    columns = "    " + pad(t("no."), 4) + pad(t("domain"), 28) + pad(t("provider"), 14) + t("email")
     if p.theme == "console":
-        out.append(p.chip("bar", pad("    " + pad(t("no."), 4) + pad(t("domain"), 28) + pad(t("provider"), 14)
-                                     + t("email"), WIDTH)))
+        out.append(p.chip("bar", pad(columns, WIDTH)))
+    elif p.theme == "board":
+        out.append(p.dim(columns[2:]))
+    elif p.theme == "tree":
+        out.append(p.fg("accent", t("domains and emails ({n})", n=len(domains)), bold=True))
+    states = {s.name: s for s in ctx.states}
     rows = []
     for i, d in enumerate(domains):
         on = i == sel
         name = pad(clip(d.get("domain", ""), 27), 28)
-        rows.append(f" {_mark(p, on)}{p.fg('accent', rpad(str(i + 1), 2))}{sep} " + (p.bold(name) if on else name)
-                    + p.dim(pad(clip(d.get("provider") or default, 13), 14)) + p.dim(clip(d.get("email", ""), INNER - 48)))
+        lead = f" {_mark(p, on)}{p.fg('accent', rpad(str(i + 1), 2))}"
+        if p.theme == "timeline":
+            lead += p.dim("│") + " "
+        elif p.theme == "tree":
+            lead += " " + _branch(p, i == len(domains) - 1)
+        else:
+            lead += "  "
+        if p.theme == "calendar":  # expiry date in place of the provider: this look thinks in dates
+            s = states.get(d.get("domain", ""))
+            when = (p.fg(level(s, ctx.threshold), pad(f"{s.expires:%d.%m.%Y}", 12)) if s and s.expires
+                    else p.dim(pad("-", 12)))
+            tail = when + p.dim(clip(d.get("email", ""), INNER - 46))
+        else:
+            tail = p.dim(pad(clip(d.get("provider") or default, 13), 14)) + p.dim(
+                clip(d.get("email", ""), INNER - visible_len(lead) - 42 - (4 if p.theme == "cards" else 0)))
+        rows.append(lead + (p.bold(name) if on else name) + tail)
     if not domains:
         rows.append("  " + p.dim(t("No domains configured.")))
+    if p.theme == "board":
+        rows = _zebra(p, [[line] for line in rows])
     hint = "  " + p.dim(t("on a domain:")) + "  " + "   ".join(
         f"{p.fg('accent', key, bold=True)} {t(short)}" for key, _, short in [("Enter", "", "more")] + list(domain_items))
     if p.theme == "console":
@@ -772,8 +1347,14 @@ def render_editor(p: Painter, ctx: Context, config: Dict, path: str, sel: int, i
         tail = ["", hint, _hint(p), _fkeys(p, items, sel - len(domains))]
     else:
         items = [(key, t(label), short) for key, label, short in items]
-        tail = [""] + _action_rows(p, items, sel, len(domains)) + ["", hint, _hint(p)]
+        actions = ([p.fg("accent", t("actions"), bold=True)] if p.theme == "tree" else []) \
+            + _rows(p, items, sel, len(domains))
+        tail = [""] + actions + ["", hint, _hint(p)]
     focus = sel if sel < len(domains) else len(domains) - 1
+    if p.theme == "cards":
+        tail = _card(p, "dim", t("actions"), "", _action_rows(p, items, sel, len(domains))) + [hint, _hint(p)]
+        window = _window(p, rows, focus, _room(len(out) + 2 + len(tail)))
+        return "\n".join(out + _card(p, "dim", t("domains and emails ({n})", n=len(domains)), "", window) + tail)
     return "\n".join(out + _window(p, rows, focus, _room(len(out) + len(tail))) + tail)
 
 
@@ -781,14 +1362,13 @@ def render_choice(p: Painter, ctx: Context, title: str, options: Sequence[str], 
                   current: Optional[str] = None) -> str:
     """Short pick list (providers, actions on a domain) in the current look."""
     out = _head(p, ctx, title) + [""]
-    rows = []
-    for i, option in enumerate(options):
-        on = i == sel
-        text = clip(option, INNER - 28)
-        rows.append(f" {_mark(p, on)}{p.fg('accent', rpad(str(i + 1), 2), bold=True)}  " + (p.bold(text) if on else text)
-                    + (p.dim("  " + t("(current)")) if option == current else ""))
+    items = [(rpad(str(i + 1), 2), clip(option, INNER - 28) + (p.dim("  " + t("(current)")) if option == current else ""),
+              "") for i, option in enumerate(options)]
     tail = ["", _hint(p, back=True)]
-    return "\n".join(out + _window(p, rows, sel, _room(len(out) + len(tail))) + tail)
+    if p.theme == "cards":
+        rows = _window(p, _action_rows(p, items, sel), sel, _room(len(out) + 2 + len(tail)))
+        return "\n".join(out + _card(p, "dim", title, "", rows) + tail)
+    return "\n".join(out + _window(p, _rows(p, items, sel), sel, _room(len(out) + len(tail))) + tail)
 
 
 def render_report(p: Painter, ctx: Context, states: Sequence[CertState], path: str) -> str:
@@ -797,14 +1377,35 @@ def render_report(p: Painter, ctx: Context, states: Sequence[CertState], path: s
     nearest = min(known, key=lambda s: s.days_left, default=None)
     bad = [s for s in states if category(s, ctx.threshold) in ("expired", "missing", "unreadable")]
     saved = t("report saved")
+    closest = t("closest to expiry: {name}, {status}", name=nearest.name,
+                status=p.fg(level(nearest, ctx.threshold), status_text(nearest))) if nearest else ""
+    problems = [(t(category(s, 10 ** 6)) + " " + s.name, p.fg("err", t(category(s, 10 ** 6))) + " " + s.name)
+                for s in bad]
+    if p.theme == "board":
+        renew = _renew_dates(states, ctx)
+        out = _head(p, ctx, t("Report")) + [" " + p.fg("ok", saved, bold=True) + "  " + p.dim(clip(path, INNER - len(saved) - 4))]
+        out += ([" " + closest] if closest else []) + _zebra(p, [[_board_row(p, s, ctx, renew.get(s.name))] for s in bad])
+        return "\n".join(out)
+    if p.theme == "tree":
+        leaves = ([closest] if closest else []) + [_dot(p, s, ctx.threshold) + " " + pad(clip(s.name, 33), 34)
+                                                   + p.fg("err", status_text(s)) for s in bad]
+        out = [_tree_head(p, ctx, t("Report"), "ok"), "", p.fg("ok", saved, bold=True) + " " + p.dim(clip(path, INNER - len(saved) - 2))]
+        return "\n".join(out + [_branch(p, i == len(leaves) - 1) + leaf for i, leaf in enumerate(leaves)])
     lines = []
-    if nearest:
-        lines.append("  " + t("closest to expiry: {name}, {status}", name=nearest.name,
-                              status=p.fg(level(nearest, ctx.threshold), status_text(nearest))))
+    if closest:
+        lines.append(("" if p.theme == "cards" else "  ") + closest)
     if bad:
-        items = [(t(category(s, 10 ** 6)) + " " + s.name, p.fg("err", t(category(s, 10 ** 6))) + " " + s.name)
-                 for s in bad]
-        lines += ["  " + line for line in wrap_join(items, INNER - 2, 2)]
+        lines += [("" if p.theme == "cards" else "  ") + line
+                  for line in wrap_join(problems, INNER - (6 if p.theme == "cards" else 2), 2)]
+    if p.theme == "cards":
+        return "\n".join(_head(p, ctx, t("Report")) + [""]
+                         + _card(p, "ok", saved, "", [p.dim(clip(path, INNER - 4))] + ([""] + lines if lines else [])))
+    if p.theme == "calendar":
+        out = _head(p, ctx, t("Report")) + ["", "  " + p.fg("ok", "✓") + " " + saved + "  "
+                                            + p.dim(clip(path, INNER - len(saved) - 6))] + lines
+        if nearest:
+            out += [""] + ["  " + line for line in _month_grid(p, nearest.expires.replace(day=1), states, ctx)]
+        return "\n".join(line.rstrip() for line in out)
     if p.theme == "console":
         segs: List[Optional[Tuple[str, str, bool]]] = [(lvl, f" {n} {t(label)} ", False)
                                                         for n, label, lvl in counts(states, ctx.threshold)]
@@ -831,6 +1432,7 @@ def render_check(p: Painter, ctx: Context, checks: Sequence[Tuple[str, str, str]
     title = title or t("checking")
     errors = sum(1 for lvl, _, _ in checks if lvl == "err")
     warnings = sum(1 for lvl, _, _ in checks if lvl == "warn")
+    worst = "err" if errors else "warn" if warnings else "ok"
     tags = {"ok": t("  OK  "), "warn": t(" WARN "), "err": t(" FAIL ")}
     if p.theme == "console":
         out = [_bar(p, [("bar", f" xCert {ctx.version} ", True), ("bar", f" {title} ", False), None,
@@ -846,23 +1448,41 @@ def render_check(p: Painter, ctx: Context, checks: Sequence[Tuple[str, str, str]
             ("warn" if warnings else "bar", " " + t("warnings {n}", n=warnings) + " ", False), None]
         return "\n".join(out + [_bar(p, segs)])
 
+    if p.theme == "board":
+        out = _head(p, ctx, title)
+        width = min(30, max((len(label) for _, label, _ in checks), default=0))
+        groups = []
+        for lvl, label, detail in checks:
+            left = " " + pad(clip(label, width), width + 2) + (p.dim if lvl == "ok" else lambda s: p.fg(lvl, s))(
+                clip(note_text(detail), INNER - width - 12))
+            groups.append([row(left, p.fg(lvl, tags[lvl].strip(), bold=True), INNER)])
+        totals = (t("errors {n}", n=errors) + "   " + t("warnings {n}", n=warnings)) if errors or warnings \
+            else t("all checks passed")
+        return "\n".join(out + _zebra(p, groups) + [_board_bar(p, totals, clip(path, WIDTH - len(totals) - 8))])
+
     if p.theme == "timeline":
         out = _head(p, ctx, title) + ["", p.fg("accent", "config.json", bold=True) + " " + p.dim(clip(path, 60))]
+        lead = [p.dim("└─" if i == len(checks) - 1 else "├─") for i in range(len(checks))]
+    elif p.theme == "tree":
+        out = [_tree_head(p, ctx, title, worst), "", p.fg("accent", "config.json", bold=True) + " " + p.dim(clip(path, 60))]
         lead = [p.dim("└─" if i == len(checks) - 1 else "├─") for i in range(len(checks))]
     else:
         out = _head(p, ctx, title)
         lead = [" "] * len(checks)
     width = min(38, max((len(label) for _, label, _ in checks), default=0))
+    rows = []
     for (lvl, label, detail), branch in zip(checks, lead):
-        text = clip(note_text(detail), INNER - 9 - width)
+        text = clip(note_text(detail), INNER - 9 - width - (4 if p.theme == "cards" else 0))
         line = f" {branch} {p.fg(lvl, CHECK_MARKS[lvl])}  {pad(clip(label, width), width)} "
-        out.append((line + (p.dim(text) if lvl == "ok" else p.fg(lvl, text))).rstrip())
+        rows.append((line + (p.dim(text) if lvl == "ok" else p.fg(lvl, text))).rstrip())
     if errors or warnings:
         total = (p.fg("err", t("errors {n}", n=errors)) if errors else p.dim(t("errors {n}", n=0))) + "   " \
             + (p.fg("warn", t("warnings {n}", n=warnings)) if warnings else p.dim(t("warnings {n}", n=0)))
     else:
         total = p.fg("ok", t("all checks passed"))
-    return "\n".join(out + ([_ledger_rule(p)] if p.theme == "ledger" else [""]) + [total])
+    if p.theme == "cards":
+        return "\n".join(out + [""] + _card(p, worst, "config.json", p.dim(clip(path, 40)), rows) + ["  " + total])
+    return "\n".join(out + rows + ([_ledger_rule(p)] if p.theme == "ledger" else [""]) + [total])
 
 
 def render_step(p: Painter, name: str, outcome: str, provider: str = "", seconds: float = 0,
@@ -878,13 +1498,40 @@ def render_step(p: Painter, name: str, outcome: str, provider: str = "", seconds
     else:
         what = t("failed")
     notes = [clip(note_text(n), INNER - 30) for n in notes[-2:]]
+    role = {"skip": "dim", "renew": "info", "issue": "info", "ok": "ok", "fail": "err"}[outcome]
+    paint = (lambda text: p.dim(text) if role == "dim" else p.fg(role, text))
+    note_lines = [p.fg("err", n) if outcome == "fail" else p.dim(n) for n in notes]
     if p.theme == "console":
         tag = {"skip": ("dim", "  --  "), "renew": ("info", "  ..  "), "issue": ("info", "  ..  "),
                "ok": ("ok", t("  OK  ")), "fail": ("err", t(" FAIL "))}[outcome]
         line = " " + _tag(p, *tag) + " " + clip(name, 24) + ": " + (p.dim(what) if outcome == "skip" else what)
         if outcome == "ok":
             line += " " + p.dim(f"({duration(seconds)})")
-        return "\n".join([line] + [" " * 10 + (p.fg("err", n) if outcome == "fail" else p.dim(n)) for n in notes])
+        return "\n".join([line] + [" " * 10 + n for n in note_lines])
+    if p.theme == "calendar":  # wall-clock time on every row, so a slow certificate shows when it happened
+        line = "  " + p.dim(f"{datetime.now():%H:%M:%S}") + "  " + pad(clip(name, 27), 28) + (
+            paint(what) if outcome in ("skip", "fail") else what)
+        if outcome == "ok":
+            line += "  " + p.dim(duration(seconds))
+        return "\n".join([line] + [" " * 14 + n for n in note_lines])
+    if p.theme == "board":
+        right = {"skip": "", "renew": p.fg("info", "..."), "issue": p.fg("info", "..."),
+                 "ok": p.fg("ok", duration(seconds), bold=True), "fail": p.fg("err", t("failed"), bold=True)}[outcome]
+        left = " " + pad(clip(name, 28), 29) + (p.dim(what) if outcome == "skip" else what if outcome != "fail" else "")
+        return "\n".join([row(left, right, INNER)] + [" " * 30 + n for n in note_lines])
+    if p.theme == "tree":
+        mark = {"skip": "-", "renew": "○", "issue": "○", "ok": "✓", "fail": "✗"}[outcome]
+        line = _branch(p, False) + paint(mark) + " " + pad(clip(name, 27), 28) + (
+            paint(what) if outcome in ("skip", "fail") else what)
+        if outcome == "ok":
+            line += "  " + p.dim(duration(seconds))
+        return "\n".join([line] + [_stem(p, False) + " " * 27 + n for n in note_lines])
+    if p.theme == "cards":
+        edge = paint("▌")
+        line = edge + " " + pad(clip(name, 28), 29) + (paint(what) if outcome in ("skip", "fail") else what)
+        if outcome == "ok":
+            line += "  " + p.dim(duration(seconds))
+        return "\n".join([line] + [edge + " " * 29 + n for n in note_lines])
     head = "  " + pad(clip(name, 27), 28)
     if outcome == "skip":
         line = head + p.dim(what)
@@ -894,10 +1541,11 @@ def render_step(p: Painter, name: str, outcome: str, provider: str = "", seconds
         line = head + p.fg("err", what, bold=True)
     else:
         line = head + what
-    return "\n".join([line] + [" " * 30 + (p.fg("err", n) if outcome == "fail" else p.dim(n)) for n in notes])
+    return "\n".join([line] + [" " * 30 + n for n in note_lines])
 
 
 # ======================
+# KEYBOARD# ======================
 # KEYBOARD AND SCREEN
 # ======================
 KEY_NAMES = {b"\x1b[A": "up", b"\x1b[B": "down", b"\x1b[C": "right", b"\x1b[D": "left",

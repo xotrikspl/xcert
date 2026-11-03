@@ -1262,7 +1262,7 @@ def pick_appearance(config_path: str, appearance: Dict[str, str], logger: loggin
             key = ui.PICKER_ROWS[sel]
         elif key in ui.PICKER_ROWS:
             sel = ui.PICKER_ROWS.index(key)
-        if key in ("1", "2", "3"):
+        if key in ui.PICKER_ROWS[:len(ui.THEMES)]:
             draft["theme"] = ui.THEMES[int(key) - 1]
         elif key == "c":
             draft["colors"] = cycle(ui.COLOR_MODES, draft["colors"], step)
@@ -1625,7 +1625,7 @@ def main() -> None:
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH,
                         help=t("Path to config.json (default: {path})", path=DEFAULT_CONFIG_PATH))
     parser.add_argument("--motd", action="store_true", help=t("Print the short certificate status used at SSH login"))
-    parser.add_argument("--theme", choices=ui.THEMES, help=t("Look for this run: ledger, timeline or console"))
+    parser.add_argument("--theme", choices=ui.THEMES, help=t("Look for this run: {looks}", looks=", ".join(ui.THEMES)))
     parser.add_argument("--colors", choices=ui.COLOR_MODES, help=t("Colours for this run: auto, full (24-bit), 16 or none"))
     parser.add_argument("--background", choices=ui.BACKGROUNDS, help=t("Palette for a dark or light terminal"))
     parser.add_argument("--lang", choices=i18n.LANGUAGES, help=t("Language for this run: en or pl"))
