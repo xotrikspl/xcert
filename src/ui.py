@@ -743,6 +743,11 @@ def console_motd(p: Painter, ctx: Context, states) -> str:
 # ======================
 # SHARED BY THE NEWER LOOKS
 # ======================
+def _wide(base: int) -> int:
+    """A name column of `base` at 80 columns that takes every extra column of a wider window."""
+    return base + WIDTH - MIN_WIDTH
+
+
 def _renew_dates(states: Sequence[CertState], ctx: Context) -> Dict[str, datetime]:
     """Certificate name -> the timer run that renews it (empty without an active timer)."""
     return {s.name: when for when, group in plan_runs(states, ctx, len(states)) for s in group}
@@ -836,14 +841,14 @@ def _cal_date(p: Painter, s: CertState) -> str:
 
 def calendar_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
     out = _head(p, ctx, t("certificates")) + [""]
-    grids = [_month_grid(p, m, states, ctx) for m in _cal_months(ctx)]
+    grids = [_month_grid(p, m, states, ctx) for m in _cal_months(ctx, (WIDTH - 2) // (GRID_W + 2))]
     out += [("  " + "  ".join(parts)).rstrip() for parts in zip(*grids)]
     out += [_cal_legend(p), ""]
     renew = _renew_dates(states, ctx)
     for s in sorted(states, key=_by_expiry):
         lvl = level(s, ctx.threshold)
-        name = clip(s.name, 26) + (p.dim(f" +{len(s.sans)}") if s.sans else "")
-        line = (f"  {_cal_date(p, s)} {_dot(p, s, ctx.threshold)} {pad(name, 30)}"
+        name = clip(s.name, _wide(26)) + (p.dim(f" +{len(s.sans)}") if s.sans else "")
+        line = (f"  {_cal_date(p, s)} {_dot(p, s, ctx.threshold)} {pad(name, _wide(30))}"
                 + p.fg(lvl, rpad(short_status(s), 8), bold=lvl != "ok"))
         if s.name in renew:
             line += "   " + p.dim(t("renew {when}", when=day(renew[s.name])))
@@ -864,10 +869,12 @@ def calendar_summary(p: Painter, ctx: Context, results, timings, elapsed: float,
 def calendar_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
     out = _head(p, ctx, "") + [""]
     rows = _action_rows(p, items, sel)
-    grid = _month_grid(p, _cal_months(ctx, 1)[0], states, ctx)
-    for i in range(max(len(rows), len(grid))):
+    months = max(1, (WIDTH - 48) // (GRID_W + 2))  # the action labels keep about 46 columns
+    grids = [_month_grid(p, m, states, ctx) for m in _cal_months(ctx, months)]
+    right = ["  ".join(parts) for parts in zip(*grids)]
+    for i in range(max(len(rows), len(right))):
         left = rows[i] if i < len(rows) else ""
-        out.append((pad(left, WIDTH - GRID_W - 2) + (grid[i] if i < len(grid) else "")).rstrip())
+        out.append((pad(left, WIDTH - months * (GRID_W + 2)) + (right[i] if i < len(right) else "")).rstrip())
     out += ["", "  " + _counts_line(p, states, ctx), "  " + p.dim(run_label(ctx))] + run_alert(p, ctx, "  ")
     return "\n".join(out + ["", _hint(p)])
 
@@ -883,7 +890,7 @@ def calendar_motd(p: Painter, ctx: Context, states) -> str:
         return "\n".join(out)
     out = [row(head + t("{n} certificates", n=len(states)) + ", " + p.fg("err", t("{n} need attention", n=len(bad))),
                p.dim(run_label(ctx)))]
-    out += [f"  {_cal_date(p, s)} {_dot(p, s, ctx.threshold)} {pad(clip(s.name, 25), 26)} {status_text(s)}"
+    out += [f"  {_cal_date(p, s)} {_dot(p, s, ctx.threshold)} {pad(clip(s.name, _wide(25)), _wide(26))} {status_text(s)}"
             for s in sorted(bad, key=_by_expiry)]
     return "\n".join(out + ["  " + p.dim(t("details:") + " xcert --list")])
 
@@ -939,14 +946,14 @@ def _board_row(p: Painter, s: CertState, ctx: Context, when: Optional[datetime])
         run = pad(day(when), 10)
         run = p.fg("accent", run, bold=True) if when == ctx.next_run else p.dim(run)
     role, status = _board_status(s, ctx)
-    return (" " + run + pad(clip(s.name, 26), 27) + p.dim(pad(clip(s.provider, 12), 13))
-            + pad(f"{s.expires:%d.%m.%Y}" if s.expires else "-", 11) + p.fg(role, clip(status, WIDTH - 63), bold=role != "ok"))
+    return (" " + run + pad(clip(s.name, _wide(26)), _wide(27)) + p.dim(pad(clip(s.provider, 12), 13))
+            + pad(f"{s.expires:%d.%m.%Y}" if s.expires else "-", 11) + p.fg(role, clip(status, 17), bold=role != "ok"))
 
 
 def board_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
     renew = _renew_dates(states, ctx)
     out = _head(p, ctx, t("certificates"))
-    out.append(p.dim(" " + pad(t("run"), 10) + pad(t("certificate"), 27) + pad(t("provider"), 13) + pad(t("expires"), 11)
+    out.append(p.dim(" " + pad(t("run"), 10) + pad(t("certificate"), _wide(27)) + pad(t("provider"), 13) + pad(t("expires"), 11)
                      + t("status")))
     order = sorted(states, key=lambda s: (renew.get(s.name) or datetime.max, _by_expiry(s)))
     out += _zebra(p, [[_board_row(p, s, ctx, renew.get(s.name))] + [" " * 11 + p.dim("+ " + san) for san in s.sans]
@@ -958,13 +965,13 @@ def board_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
 
 def board_summary(p: Painter, ctx: Context, results, timings, elapsed: float, skipped=()) -> str:
     out = [_board_bar(p, t("renewal"), duration(elapsed)),
-           p.dim(" " + pad(t("start"), 8) + pad(t("certificate"), 31) + pad(t("result"), 14) + t("took"))]
+           p.dim(" " + pad(t("start"), 8) + pad(t("certificate"), _wide(31)) + pad(t("result"), 14) + t("took"))]
     groups = []
     for (label, ok), (start, length) in zip(results, timings):
         start = int(start)
         result = (p.dim(t("skipped")) if ok and label in skipped else p.fg("ok", t("done")) if ok
                   else p.fg("err", t("failed"), bold=True))
-        groups.append([" " + p.fg("accent", pad(f"+{start // 60}:{start % 60:02d}", 8)) + pad(clip(label, 30), 31)
+        groups.append([" " + p.fg("accent", pad(f"+{start // 60}:{start % 60:02d}", 8)) + pad(clip(label, _wide(30)), _wide(31))
                        + pad(result, 14) + p.dim(duration(length) if length >= 1 else "-")])
     out += _zebra(p, groups) + ["", " " + _totals(p, results, skipped, "   ")]
     return "\n".join(out + _failures(p, results, " "))
@@ -1005,7 +1012,7 @@ def board_motd(p: Painter, ctx: Context, states) -> str:
                       run_label(ctx))]
     for s in bad:
         role, status = _board_status(s, ctx)
-        out.append(" " + pad(clip(s.name, 28), 29) + p.dim(pad(f"{s.expires:%d.%m.%Y}" if s.expires else "-", 11))
+        out.append(" " + pad(clip(s.name, _wide(28)), _wide(29)) + p.dim(pad(f"{s.expires:%d.%m.%Y}" if s.expires else "-", 11))
                    + p.fg(role, status, bold=True))
     return "\n".join(out + [" " + p.dim(t("details:") + " xcert --list")])
 
@@ -1048,7 +1055,7 @@ def tree_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
                 tail = p.fg(lvl, rpad(short_status(s), 7), bold=lvl != "ok") + "  " + p.dim(f"{s.expires:%d.%m.%Y}")
             if lvl != "ok" and s.name in renew:
                 tail += "  " + p.fg(lvl, t("renew {when}", when=day(renew[s.name])))
-            out.append(_branch(p, last) + _dot(p, s, ctx.threshold) + " " + pad(clip(s.name, 33), 34) + tail)
+            out.append(_branch(p, last) + _dot(p, s, ctx.threshold) + " " + pad(clip(s.name, _wide(33)), _wide(34)) + tail)
             out += [_stem(p, last) + _branch(p, j == len(s.sans) - 1) + p.dim(san) for j, san in enumerate(s.sans)]
     out += ["", _counts_line(p, states, ctx, ", "),
             p.dim(t("renewal threshold {n} days", n=ctx.threshold) + ", " + run_label(ctx))]
@@ -1065,7 +1072,7 @@ def tree_summary(p: Painter, ctx: Context, results, timings, elapsed: float, ski
             mark, result = p.fg("ok", "✓"), p.fg("ok", t("done"))
         else:
             mark, result = p.fg("err", "✗"), p.fg("err", t("failed"), bold=True)
-        out.append(_branch(p, i == len(results) - 1) + mark + " " + pad(clip(label, 30), 31) + pad(result, 12)
+        out.append(_branch(p, i == len(results) - 1) + mark + " " + pad(clip(label, _wide(30)), _wide(31)) + pad(result, 12)
                    + p.dim(duration(length) if length >= 1 else ""))
     return "\n".join(out + ["", _totals(p, results, skipped, "   ")] + _failures(p, results))
 
@@ -1093,7 +1100,7 @@ def tree_motd(p: Painter, ctx: Context, states) -> str:
         return row(head + t("{n} certificates OK", n=len(states)), p.dim(run_label(ctx)))
     out = [row(head + t("{n} certificates", n=len(states)) + ", " + p.fg("err", t("{n} need attention", n=len(bad))),
                p.dim(run_label(ctx)))]
-    out += ["  " + _branch(p, i == len(bad) - 1) + _dot(p, s, ctx.threshold) + " " + pad(clip(s.name, 28), 29)
+    out += ["  " + _branch(p, i == len(bad) - 1) + _dot(p, s, ctx.threshold) + " " + pad(clip(s.name, _wide(28)), _wide(29))
             + status_text(s) for i, s in enumerate(bad)]
     return "\n".join(out + ["  " + p.dim(t("details:") + " xcert --list")])
 
@@ -1101,7 +1108,16 @@ def tree_motd(p: Painter, ctx: Context, states) -> str:
 # ======================
 # CARDS
 # ======================
-CARD_W = 39
+CARD_MIN = 39  # two cards a row at 80 columns
+
+
+def _per_row() -> int:
+    return max(1, (WIDTH + 2) // (CARD_MIN + 2))
+
+
+def _card_w() -> int:
+    """Cards stretch so a row of them always spans the window."""
+    return (WIDTH + 2) // _per_row() - 2
 
 
 def _card(p: Painter, role: str, title: str, right: str, body: Sequence[str], width: int = 0) -> List[str]:
@@ -1120,17 +1136,18 @@ def _card(p: Painter, role: str, title: str, right: str, body: Sequence[str], wi
 
 def _card_grid(cards: Sequence[List[str]]) -> List[str]:
     """Cards side by side, as many as the screen width takes."""
-    per = max(1, (WIDTH + 2) // (CARD_W + 2))
+    per, width = _per_row(), _card_w()
     out = []
     for i in range(0, len(cards), per):
         chunk = cards[i:i + per]
-        out += ["  ".join(pad(card[n], CARD_W) for card in chunk).rstrip() for n in range(len(chunk[0]))]
+        out += ["  ".join(pad(card[n], width) for card in chunk).rstrip() for n in range(len(chunk[0]))]
     return out
 
 
 def _cert_card(p: Painter, s: CertState, ctx: Context, renew: Dict[str, datetime]) -> List[str]:
     lvl = level(s, ctx.threshold)
-    meter_w = CARD_W - 4 - 11
+    width = _card_w()
+    meter_w = width - 4 - 11
     if s.days_left is None or s.days_left < 0:
         meter = p.dim("·" * meter_w)
     else:
@@ -1138,10 +1155,10 @@ def _cert_card(p: Painter, s: CertState, ctx: Context, renew: Dict[str, datetime
         meter = p.fg(grad_role(s.days_left, ctx.threshold), bar) + p.dim("·" * (meter_w - len(bar)))
     when = renew.get(s.name)
     nxt = p.fg("warn" if lvl != "ok" else "accent", t("renew {when}", when=f"{when.day}.{when.month}")) if when else ""
-    return _card(p, lvl, clip(s.name, CARD_W - 12), p.dim(f"+{len(s.sans)}") if s.sans else "",
+    return _card(p, lvl, clip(s.name, width - 12), p.dim(f"+{len(s.sans)}") if s.sans else "",
                  [p.fg(lvl, pad(short_status(s), 10), bold=True) + " " + meter,
                   p.dim(pad(clip(s.provider, 12), 13)) + pad(f"{s.expires:%d.%m.%Y}" if s.expires else "-", 11) + nxt],
-                 CARD_W)
+                 width)
 
 
 def cards_list(p: Painter, ctx: Context, states: Sequence[CertState]) -> str:
@@ -1157,9 +1174,9 @@ def cards_summary(p: Painter, ctx: Context, results, timings, elapsed: float, sk
     body = []
     for (label, ok), (_, length) in zip(results, timings):
         if ok and label in skipped:
-            body.append(p.dim("- " + pad(clip(label, 34), 35) + t("skipped")))
+            body.append(p.dim("- " + pad(clip(label, _wide(34)), _wide(35)) + t("skipped")))
         else:
-            body.append((p.fg("ok", "✓") if ok else p.fg("err", "✗")) + " " + pad(clip(label, 34), 35)
+            body.append((p.fg("ok", "✓") if ok else p.fg("err", "✗")) + " " + pad(clip(label, _wide(34)), _wide(35))
                         + pad(p.fg("ok", t("done")) if ok else p.fg("err", t("failed"), bold=True), 12)
                         + p.dim(duration(length)))
     body += ["", _totals(p, results, skipped, "   ")]
@@ -1170,7 +1187,7 @@ def cards_summary(p: Painter, ctx: Context, results, timings, elapsed: float, sk
 def cards_menu(p: Painter, ctx: Context, states, items, sel: Optional[int] = None) -> str:
     renew = _renew_dates(states, ctx)
     bad = sorted((s for s in states if level(s, ctx.threshold) != "ok"), key=_by_expiry)
-    per = max(1, (WIDTH + 2) // (CARD_W + 2))
+    per = _per_row()
     out = _head(p, ctx, "") + [""]
     if bad:
         out += _card_grid([_cert_card(p, s, ctx, renew) for s in bad[:per]])
@@ -1188,7 +1205,7 @@ def cards_motd(p: Painter, ctx: Context, states) -> str:
     if not bad:
         return "\n".join(_card(p, "ok", "xCert", p.dim(run_label(ctx)),
                                [p.fg("ok", t("{n} certificates OK", n=len(states)))]))
-    body = [f"{_dot(p, s, ctx.threshold)} {pad(clip(s.name, 30), 31)} {status_text(s)}" for s in bad]
+    body = [f"{_dot(p, s, ctx.threshold)} {pad(clip(s.name, _wide(30)), _wide(31))} {status_text(s)}" for s in bad]
     body.append(p.dim(t("details:") + " xcert --list"))
     title = t("{n} certificates", n=len(states)) + ", " + p.fg("err", t("{n} need attention", n=len(bad)))
     return "\n".join(_card(p, "err", "xCert", title, body))
@@ -1387,7 +1404,7 @@ def render_report(p: Painter, ctx: Context, states: Sequence[CertState], path: s
         out += ([" " + closest] if closest else []) + _zebra(p, [[_board_row(p, s, ctx, renew.get(s.name))] for s in bad])
         return "\n".join(out)
     if p.theme == "tree":
-        leaves = ([closest] if closest else []) + [_dot(p, s, ctx.threshold) + " " + pad(clip(s.name, 33), 34)
+        leaves = ([closest] if closest else []) + [_dot(p, s, ctx.threshold) + " " + pad(clip(s.name, _wide(33)), _wide(34))
                                                    + p.fg("err", status_text(s)) for s in bad]
         out = [_tree_head(p, ctx, t("Report"), "ok"), "", p.fg("ok", saved, bold=True) + " " + p.dim(clip(path, INNER - len(saved) - 2))]
         return "\n".join(out + [_branch(p, i == len(leaves) - 1) + leaf for i, leaf in enumerate(leaves)])
