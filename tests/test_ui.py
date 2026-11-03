@@ -477,6 +477,14 @@ class ScreenSizeTest(unittest.TestCase):
         bar = ui.render_menu(ui.Painter("console", "none"), CTX, STATES, main.MENU_ITEMS, 0).split("\n")[0]
         self.assertEqual(ui.visible_len(bar), 132)
 
+    def test_hidden_cursor_comes_back_on_any_exit(self):
+        # --status, --install and --update draw screens without the menu's own cleanup
+        with mock.patch.object(ui, "interactive", return_value=True), mock.patch("sys.stdout", io.StringIO()), \
+                mock.patch.object(ui, "_cursor_hidden", False), mock.patch("atexit.register") as register:
+            ui.clear()
+            ui.clear()
+        register.assert_called_once_with(ui.show_cursor)
+
     def test_narrow_window_cuts_lines_without_breaking_colours(self):
         line = ui.Painter("ledger", "16").fg("ok", "x" * 50) + "y" * 50
         cut = ui.cut(line, 60)
