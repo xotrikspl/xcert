@@ -7,6 +7,7 @@ per-look 24-bit palettes, fall
 back to the 16 ANSI colours, or disappear for journald, cron and NO_COLOR.
 Every screen fits in 80 columns and avoids emoji, whose width terminals disagree on.
 """
+import atexit
 import calendar
 import math
 import os
@@ -1677,9 +1678,16 @@ def cut(text: str, width: int) -> str:
     return "".join(out) + ("\033[0m" if "\x1b" in text else "")
 
 
+_cursor_hidden = False
+
+
 def clear() -> None:
     """Clears the terminal and hides the cursor: these screens are driven by keys, there is nothing to type."""
+    global _cursor_hidden
     if interactive():
+        if not _cursor_hidden:  # whatever path the program leaves by, the shell gets its cursor back
+            _cursor_hidden = True
+            atexit.register(show_cursor)
         sys.stdout.write("\033[?25l\033[H\033[J")
 
 
